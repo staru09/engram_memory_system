@@ -120,3 +120,5 @@ tests/
 scale_data/              # Generated conversation JSON files per stage
 results/                 # Results for scale testing with queries
 ```
+
+Project demo can be found here [demo](https://youtu.be/OKpCOntN71Y)
