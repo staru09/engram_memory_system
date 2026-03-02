@@ -355,9 +355,7 @@ We rebuild the user profile from `is_active = TRUE` facts instead of scene summa
 
 The entire conversation (100–500 messages) is sent to the LLM in a single call for topical segmentation, rather than using a sliding-window approach that processes N messages at a time.
 
-**Why full-conversation?** The LLM sees the complete topical flow and can detect that a "diet" discussion at turn 5 and turn 80 belong to different contexts (baseline vs post-injury), producing accurate segment boundaries. A windowed approach would create artificial breaks at window edges, splitting natural topics mid-conversation. One API call for segmentation is also simpler and cheaper than multiple windowed calls.
-
-**What we lose:** Sending 500 messages in one call pushes against context window limits — quality may degrade on very long inputs as the LLM struggles to attend to all turns equally. It's also not incrementally composable: if 100 new messages arrive, we re-segment the full conversation rather than just the new batch. In practice, our largest stage (500 messages) still fits comfortably within Gemini's context window, so this tradeoff holds.
+**Why full-conversation?** The LLM sees the complete topical flow and can detect that a "diet" discussion at turn 5 and turn 80 belong to different contexts (baseline vs post-injury), producing accurate segment boundaries. A windowed approach would create artificial breaks at window edges, splitting natural topics mid-conversation. Sending 500 messages in one call pushes against context window limits — quality may degrade on very long inputs as the LLM struggles to attend to all turns equally.
 
 ---
 
