@@ -351,9 +351,13 @@ Full re-clustering (e.g. k-means) would produce better groupings but requires co
 
 We rebuild the user profile from `is_active = TRUE` facts instead of scene summaries. This guarantees the profile never contains superseded information, at the cost of losing the narrative richness of scene summaries. The tradeoff favors accuracy over eloquence.
 
-### 3. Agentic Retrieval Capped at 2 Rounds
+### 3. Full-Conversation Segmentation, Not Windowed
 
-When the initial retrieval is insufficient, the system rewrites the query and tries once more — then stops. More rounds would improve recall for edge cases but each round adds a sufficiency check LLM call plus re-retrieval latency. In practice, round 2 already resolved every insufficient case in the scale evaluation (Stage 2's 80% → 100% by round 2), so the cap is a deliberate cost-vs-benefit decision: one retry buys most of the gain, further retries yield diminishing returns.
+The entire conversation (100–500 messages) is sent to the LLM in a single call for topical segmentation, rather than using a sliding-window approach that processes N messages at a time.
+
+**Why full-conversation?** The LLM sees the complete topical flow and can detect that a "diet" discussion at turn 5 and turn 80 belong to different contexts (baseline vs post-injury), producing accurate segment boundaries. A windowed approach would create artificial breaks at window edges, splitting natural topics mid-conversation. One API call for segmentation is also simpler and cheaper than multiple windowed calls.
+
+**What we lose:** Sending 500 messages in one call pushes against context window limits — quality may degrade on very long inputs as the LLM struggles to attend to all turns equally. It's also not incrementally composable: if 100 new messages arrive, we re-segment the full conversation rather than just the new batch. In practice, our largest stage (500 messages) still fits comfortably within Gemini's context window, so this tradeoff holds.
 
 ---
 
