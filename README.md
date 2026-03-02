@@ -105,7 +105,6 @@ memory_layer/
   cluster_manager.py     # MemScene clustering
   profile_manager.py     # Conflict detection (vector + keyword hybrid)
   profile_extractor.py   # User profile synthesis
-  foresight_extractor.py # Foresight signal extraction
 
 agentic_layer/
   memory_manager.py      # Agentic retrieval (multi-round, sufficiency check)

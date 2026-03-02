@@ -44,8 +44,7 @@ memory_assignment/
 │       ├── segmentation.txt         # Topical segmentation
 │       ├── profile_extraction.txt   # Active facts → profile
 │       ├── sufficiency_check.txt    # Retrieval sufficiency evaluation
-│       ├── query_rewrite.txt        # Query rewriting for insufficient retrieval
-│       └── foresight_extraction.txt # Foresight signal extraction
+│       └── query_rewrite.txt        # Query rewriting for insufficient retrieval
 │
 ├── agentic_layer/                  # Retrieval & Orchestration
 │   ├── vectorize_service.py        # Gemini embedding wrapper (single + batch)
