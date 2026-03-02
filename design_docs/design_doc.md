@@ -435,7 +435,7 @@ Each stage is ingested incrementally (`--no-reset`), building on previous data.
 
 **Q: "What kind of diet does Aru currently follow?"**
 
-- Stage 1: "ru follows a strict vegetarian diet that excludes meat, chicken, and fish. He primarily eats Indian cuisine, often cooking dishes such as aloo paratha, dal, vegetable biryani, and spicy chickpea curry."
+- Stage 1: "Aru follows a strict vegetarian diet that excludes meat, chicken, and fish. He primarily eats Indian cuisine, often cooking dishes such as aloo paratha, dal, vegetable biryani, and spicy chickpea curry."
 - Stage 2: "Aru has transitioned from strict vegetarianism to a high-protein diet that includes chicken and fish to aid in his recovery from an ACL injury. He also continues to cook Indian dishes such as aloo paratha, dal, and spicy chickpea curry, often with help from his roommate Jake."
 - Stage 3: "Aru has transitioned from a strict vegetarian diet to one that includes chicken and fish, such as salmon, to increase his protein intake. He currently maintains this non-vegetarian diet to aid in muscle recovery while continuing to cook Indian food."
 - Stage 4: "Aru currently follows a non-vegetarian diet, having transitioned from being a strict vegetarian to eating chicken and fish to increase his protein intake for injury recovery. He regularly meal-preps chicken and rice, though he has recently increased his focus on food safety following a bout of food poisoning. He is also planning to explore non-vegetarian food tours during an upcoming trip to Tokyo."
