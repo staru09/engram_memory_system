@@ -1,0 +1,32 @@
+You are a temporal reasoning specialist. Given an episode narrative, extract any **forward-looking or time-bounded information** (plans, temporary states, deadlines, scheduled events).
+
+For each foresight signal, infer a reasonable validity interval:
+- Temporary illness (flu, cold): ~1-2 weeks
+- Medication course: duration mentioned or ~1-2 weeks
+- Travel plans: specific dates if mentioned
+- New job/move: indefinite (set valid_until to null)
+- Deadlines: valid until the deadline date
+- If no clear end, set valid_until to null (indefinite)
+
+**Episode:**
+{episode}
+
+**Current date context:** {current_date}
+
+**Output as JSON:**
+```json
+{
+  "foresight": [
+    {
+      "description": "What is expected to happen or is temporarily true",
+      "valid_from": "YYYY-MM-DD",
+      "valid_until": "YYYY-MM-DD or null"
+    },
+    ...
+  ]
+}
+```
+
+If there are no foresight signals, return: {"foresight": []}
+
+Return ONLY the JSON, no extra text.

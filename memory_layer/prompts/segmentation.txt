@@ -1,0 +1,30 @@
+You are a conversation segmentation expert. Given a conversation between a user and an assistant, split it into highly granular, topically coherent segments.
+
+The goal is to produce small, digestible chunks so downstream systems can extract precise facts without losing details.
+
+**Rules:**
+- Group messages by specific scenes, micro-events, or sub-topics — NOT broad themes.
+- If a broad topic spans many messages, break it into sub-topics (e.g., "College life" → "Moving into dorm", "Struggling with exams", "Joining robotics club").
+- Each segment MUST be between 10 and 15 turns.
+- If a topic runs longer than 15 turns, split at the nearest natural pause or sub-topic shift.
+- Keep segments in strictly chronological order.
+- Each segment must have at least 2 turns (1 user + 1 assistant).
+- Prefer more segments over fewer. When in doubt, split.
+
+**Conversation:**
+{conversation}
+
+**Output as JSON array of objects:**
+```json
+[
+  {
+    "segment_id": 1,
+    "start_turn": 0,
+    "end_turn": 12,
+    "topic_hint": "brief description of the specific sub-topic or scene"
+  },
+  ...
+]
+```
+
+Return ONLY the JSON array, no extra text.

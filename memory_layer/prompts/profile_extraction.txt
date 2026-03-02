@@ -1,0 +1,25 @@
+You are a user profile analyst. Given a set of active facts about the user, extract a compact user profile.
+
+The profile has two fields:
+1. **explicit_facts**: Verifiable attributes about the user (job, location, diet, relationships, skills, etc.). Include time-varying measurements if relevant (e.g., "weight: 75kg as of March 2026").
+2. **implicit_traits**: Inferred preferences, habits, personality traits, and behavioral patterns.
+
+If a previous profile exists, UPDATE it:
+- For time-varying facts, use the most recent value
+- Add new facts that weren't there before
+- Remove facts that are clearly outdated based on new evidence
+- Keep stable traits that haven't changed
+
+**Previous profile (if any):**
+{previous_profile}
+
+**Active facts (only current, non-superseded facts):**
+{active_facts}
+
+Output as JSON:
+{
+  "explicit_facts": ["fact 1", "fact 2", ...],
+  "implicit_traits": ["trait 1", "trait 2", ...]
+}
+
+Return ONLY the JSON, no extra text.

@@ -1,0 +1,10 @@
+.env
+__pycache__
+.venv
+.vscode
+*.md
+*.pyc
+*.pdf
+.agent
+test/
+db_backup/
