@@ -396,8 +396,6 @@ We rebuild the user profile from `is_active = TRUE` facts instead of scene summa
 
 When `query_time` is set, vector search results from Qdrant must be post-filtered against PostgreSQL to check `conversation_date` and `superseded_on` bounds. This means each candidate fact triggers a `db.get_fact_by_id()` round-trip, adding latency that scales linearly with the number of candidates. Combined with over-fetching to compensate for filtered-out results, temporal queries are noticeably slower than non-temporal ones (e.g., 23.5s at Stage 3 vs ~14s without temporal filtering).
 
-**Solution:** Store `conversation_date` and `superseded_on` as payload metadata directly in Qdrant. Qdrant natively supports payload-based filtering during search via `Filter` conditions (e.g., `conversation_date <= query_time AND (superseded_on IS NULL OR superseded_on > query_time)`). This would eliminate the post-filter entirely — Qdrant returns only temporally valid facts in a single call, removing both the per-fact DB round-trips and the need to over-fetch. The only additional requirement is updating the Qdrant payload when a fact gets superseded during conflict resolution.
-
 ### 4. Full-Conversation Segmentation, Not Windowed
 
 The entire conversation (100–500 messages) is sent to the LLM in a single call for topical segmentation, rather than using a sliding-window approach that processes N messages at a time.
