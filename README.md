@@ -59,9 +59,21 @@ The JSON file should have the format:
 
 ```bash
 python main.py query "What does the user do for work?" [--verbose]
+python main.py query "What was Aru eating?" --date 2026-02-10
 ```
 
 - `--verbose` — show full retrieved context before the answer
+- `--date YYYY-MM-DD` — query as of a specific date (temporal filtering)
+
+### Database management
+
+```bash
+python db_manage.py status    # show row/point counts
+python db_manage.py backup    # backup PG + Qdrant to db_backup/
+python db_manage.py restore   # reset + restore from db_backup/
+python db_manage.py reset     # wipe all data
+python db_manage.py scenes    # show MemScenes with MemCell counts
+```
 
 ## Testing
 
@@ -73,11 +85,21 @@ python test/test_scenarios.py dietary    # single scenario
 python test/test_scenarios.py all --verbose  # show pipeline output
 ```
 
+### Evaluation queries (per-stage with expected answers)
+
+```bash
+python tests/eval_queries.py --stage 1
+python tests/eval_queries.py --stage 2 --time 2026-03-01
+python tests/eval_queries.py --all
+```
+
+Results are saved to `results/` as markdown reports.
+
 ### Cumulative scale test (500 messages across 4 stages)
 
 ```bash
-python test/cumulative_scale_test.py
-python test/cumulative_scale_test.py --skip-to 3   # resume from stage 3
+python tests/cumulative_scale_test.py
+python tests/cumulative_scale_test.py --skip-to 3   # resume from stage 3
 ```
 
 ## Generating test data
@@ -98,6 +120,7 @@ db.py                    # PostgreSQL schema and operations
 vector_store.py          # Qdrant vector operations
 models.py                # Data classes (MemCell, AtomicFact, Foresight, etc.)
 dummy_data.py            # Test data generator (Gemini-powered multi-agent conversations)
+db_manage.py             # Database utilities (status, backup, restore, reset)
 
 memory_layer/
   memcell_extractor.py   # Conversation segmentation (LLM-based)
@@ -109,7 +132,7 @@ memory_layer/
 agentic_layer/
   memory_manager.py      # Agentic retrieval (multi-round, sufficiency check)
   fetch_mem_service.py   # Memory fetch orchestration
-  retrieval_utils.py     # Hybrid search (RRF fusion of vector + keyword)
+  retrieval_utils.py     # Hybrid search (RRF fusion of vector + keyword, temporal filtering)
   vectorize_service.py   # Embedding service (Gemini)
 
 tests/
@@ -117,8 +140,12 @@ tests/
   cumulative_scale_test.py  # Multi-stage scale test
   eval_queries.py        # Stage-specific evaluation queries
 
+design_docs/
+  design_doc.md          # Full architecture and design decisions
+  result_summary.md      # Consolidated evaluation results across all stages
+
 scale_data/              # Generated conversation JSON files per stage
-results/                 # Results for scale testing with queries
+results/                 # Evaluation report markdown files
 ```
 
 Project demo can be found here [demo](https://youtu.be/OKpCOntN71Y)
