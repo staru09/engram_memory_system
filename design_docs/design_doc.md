@@ -272,7 +272,6 @@ WHERE valid_from <= :query_time
 - **Expired foresight** stays in the database as historical record but is excluded from active retrieval
 - **Indefinite foresight** (`valid_until = NULL`) remains active until explicitly superseded
 
-
 #### Temporal Fact Filtering (via `--date`)
 
 The original `is_active` boolean only answers "is this fact current?" — it cannot answer "was this fact true at time X?" When querying "What was Aru eating in Feb?", the system returned both the old vegetarian diet AND the later chicken/fish change, because superseded facts vanish from all queries and future facts appear in all queries.
@@ -280,11 +279,13 @@ The original `is_active` boolean only answers "is this fact current?" — it can
 To solve this, atomic facts and memcells now store `conversation_date` (from the JSON `date` field, not wall-clock insert time) and `superseded_on` (set during conflict resolution). When `--date` is provided at query time, three retrieval channels are filtered:
 
 **1. Facts** — Keyword search uses temporal bounds instead of `is_active`:
+
 ```sql
 WHERE conversation_date <= :query_time
   AND (superseded_on IS NULL OR superseded_on > :query_time)
   AND fact_tsv @@ plainto_tsquery(...)
 ```
+
 Vector search results (Qdrant has no temporal fields) are post-filtered by checking `conversation_date` and `superseded_on` from PostgreSQL.
 
 **2. Episodes** — `_pool_episodes()` filters `WHERE conversation_date <= :query_time`. A Feb query never sees March episode narratives.
@@ -294,6 +295,7 @@ Vector search results (Qdrant has no temporal fields) are post-filtered by check
 Without `--date`, all existing behavior is preserved unchanged (`is_active = TRUE` filtering, all episodes, full profile).
 
 **Example:**
+
 ```
 Stage 1 (date: 2026-02-01): "Aru is a strict vegetarian"
   → conversation_date = 2026-02-01, superseded_on = NULL
@@ -477,43 +479,6 @@ Each stage is ingested incrementally (`--no-reset`), building on previous data.
 - Food poisoning antibiotics correctly reported as completed on June 15 (query date)
 - Tesla Autopilot internship correctly supersedes SAIL; full career progression visible (ME → CS 229 → SAIL → Tesla)
 - Retrieval latency at 26.2s — scales linearly with fact count
-
-### Sample Retrieval Outputs
-
-**Q: "What kind of diet does Aru currently follow?"**
-
-- Stage 1: "Aru follows a strict vegetarian diet that excludes meat, chicken, and fish. To maintain this regimen, Aru prepares Indian meals such as dal, vegetable biryani, and aloo parathas at Wilbur Hall."
-- Stage 2: "Aru recently switched from a strict vegetarian diet to a high-protein diet that includes chicken and fish. This change was made to assist in recovering from a torn ACL sustained in February 2026."
-- Stage 3: "Aru currently follows a non-vegetarian diet that incorporates chicken and fish to provide protein for muscle rebuilding and recovery. This high-protein diet includes meals such as salmon and chicken, which he prepares at his apartment with help from his roommate, Jake."
-- Stage 4: "Aru currently follows a non-vegetarian diet that includes chicken and fish to support recovery and muscle building. They regularly meal-prep chicken and rice and plan to participate in non-vegetarian food tours during an upcoming trip to Tokyo."
-
-**Q: "Does Aru have any active health issues or injuries?"**
-
-- Stage 2 (2026-03-01): "Aru is currently recovering from a torn ACL sustained while playing basketball on February 20, 2026. To manage this injury, Aru is attending physical therapy three times a week, taking anti-inflammatory medication, and is restricted from sports and heavy physical activity until April 20, 2026."
-
-- Stage 3 (2026-05-01): "Aru currently has no active health issues or injuries and is in 100% health. He has fully recovered from a previous torn ACL and has returned to peak physical condition. He is now active in high-intensity sports, including playing basketball and bouldering at a V5 level."
-
-- Stage 4 (2026-06-15): "Aru is currently 100% healthy and has no active injuries. They have fully recovered from a previous ACL injury and completed a course of antibiotics for food poisoning as of June 15, 2026."
-
-**Q: "What are Aru’s hobbies and interests?"**
-
-- Stage 1: "Aru enjoys building competition robotics, playing fingerstyle folk songs on the acoustic guitar, and cooking vegetarian Indian meals like dal and vegetable biryani. They also maintain an active lifestyle through daily three-mile runs and playing weekend basketball at Arrillaga gym."
-
-- Stage 2 (2026-03-01): "Aru is interested in robotics and engineering, specifically focusing on building competition bots and studying machine learning. Their hobbies include playing folk songs on the acoustic guitar, cooking vegetarian Indian meals, and engaging in physical activities like daily running, basketball, and hiking."
-
-- Stage 3 (2026-05-01): "Aru’s primary hobbies include bouldering at a V5 level and playing basketball. Their interests are heavily focused on robotics and machine learning, specifically computer vision for robotic manipulation and reinforcement learning for NBA sports analytics."
-
-- Stage 4 (2026-06-15): "Aru’s primary hobbies include bouldering at a V5 level, surfing solo at Pacifica on weekends, and playing basketball. Their interests are deeply rooted in robotics and AI, which they explore through leading a software team and visiting tech-focused destinations like Akihabara. Aru also enjoys watching sci-fi thriller movies and researching international food tours for upcoming travels."
-
-**Q: "What do you know about Aru overall?"**
-
-- Stage 1: "Aru is an engineering student residing at Wilbur Hall who balances thermodynamics and fluid mechanics coursework with a competition robotics project. To maintain peak health, they follow a strict vegetarian Indian diet, run three miles daily, and play weekend basketball at the Arrillaga gym."
-
-- Stage 2 (2026-03-01): "Aru is a student currently recovering from a torn ACL sustained in February 2026, which prompted a move to University Ave and a diet change from vegetarianism to eating chicken and fish. Currently focusing on CS 229 (Machine Learning), Aru is planning a future trip to Tokyo while navigating a recovery regimen that includes medication and physical therapy."
-
-- Stage 3 (2026-05-01): "Aru is a Stanford University student living on University Ave who has fully recovered from an ACL injury and currently leads a robotics software team. He is an active V5-level boulderer and is preparing for a computer vision research internship at the Stanford Artificial Intelligence Laboratory starting in June 2026."
-
-- Stage 4 (2026-06-15): "Aru is a Stanford student and robotics team leader who currently works as an intern for Tesla Autopilot in Palo Alto. They are in peak physical health following an ACL recovery and stay active through V5 bouldering, surfing at Pacifica, and a high-protein diet of chicken and fish. Residing on University Avenue, Aru is currently planning an August 2026 trip to Tokyo with their roommate Jake to explore the city’s robotics, food, and bouldering scenes."
 
 → More sample queries and results in [result_summary.md](result_summary.md) and detailed analysis in [results](../results/)
 
