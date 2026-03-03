@@ -1,16 +1,16 @@
-from datetime import datetime
+from datetime import datetime, date
 from config import RRF_K, RETRIEVAL_TOP_K
 import db
 import vector_store
 from agentic_layer.vectorize_service import embed_text
 
 
-def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict]:
+def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None) -> list[dict]:
     """
     PostgreSQL full-text search on atomic_facts using ts_rank.
     Returns list of {fact_id, memcell_id, fact_text, rank}.
     """
-    return db.keyword_search_facts(query, top_k)
+    return db.keyword_search_facts(query, top_k, query_time=query_time)
 
 
 def vector_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict]:
@@ -56,14 +56,47 @@ def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
     return merged
 
 
-def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict]:
+def _temporal_post_filter(facts: list[dict], query_time) -> list[dict]:
+    """Post-filter fused results by temporal bounds from DB.
+
+    Removes facts that didn't exist yet at query_time or were already superseded.
+    """
+    query_date = query_time.date() if isinstance(query_time, datetime) else query_time
+    filtered = []
+    for f in facts:
+        fact_row = db.get_fact_by_id(f["fact_id"])
+        if not fact_row:
+            continue
+        conv_date = fact_row.get("conversation_date")
+        if conv_date and conv_date > query_date:
+            continue  # Fact didn't exist yet at query time
+        sup_date = fact_row.get("superseded_on")
+        if sup_date and sup_date <= query_date:
+            continue  # Fact was already superseded by query time
+        filtered.append(f)
+    return filtered
+
+
+TEMPORAL_OVERFETCH_MULTIPLIER = 3
+
+
+def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None) -> list[dict]:
     """
     Run both keyword + vector search and fuse via RRF.
-    Returns merged ranked list of facts.
+    When query_time is provided, over-fetches then post-filters to compensate
+    for temporal filtering removing candidates.
     """
-    kw_results = keyword_search(query, top_k)
-    vec_results = vector_search(query, top_k)
-    return rrf_fusion(kw_results, vec_results)
+    if query_time:
+        fetch_k = top_k * TEMPORAL_OVERFETCH_MULTIPLIER
+        kw_results = keyword_search(query, fetch_k, query_time=query_time)
+        vec_results = vector_search(query, fetch_k)
+        fused = rrf_fusion(kw_results, vec_results)
+        fused = _temporal_post_filter(fused, query_time)
+        return fused[:top_k]
+    else:
+        kw_results = keyword_search(query, top_k)
+        vec_results = vector_search(query, top_k)
+        return rrf_fusion(kw_results, vec_results)
 
 
 def filter_active_foresight(query_time: datetime = None) -> list[dict]:

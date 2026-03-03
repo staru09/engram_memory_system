@@ -10,6 +10,8 @@ class AtomicFact:
     fact_text: str = ""
     is_active: bool = True
     created_at: Optional[datetime] = None
+    conversation_date: Optional[str] = None
+    superseded_on: Optional[str] = None
 
 
 @dataclass
@@ -30,6 +32,7 @@ class MemCell:
     created_at: Optional[datetime] = None
     source_id: str = ""
     scene_id: Optional[int] = None
+    conversation_date: Optional[str] = None
     facts: list[AtomicFact] = field(default_factory=list)
     foresight: list[Foresight] = field(default_factory=list)
 

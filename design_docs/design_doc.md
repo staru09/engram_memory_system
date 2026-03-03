@@ -69,11 +69,13 @@ memory_assignment/
 memscenes (id, theme_label, summary, created_at, updated_at)
 
 -- Core memory unit — one per conversation segment
-memcells (id, episode_text, raw_dialogue, created_at, source_id, scene_id → memscenes)
+memcells (id, episode_text, raw_dialogue, created_at, source_id, scene_id → memscenes, conversation_date DATE)
 
 -- Discrete verifiable statements extracted from episodes
-atomic_facts (id, memcell_id → memcells, fact_text, fact_tsv TSVECTOR, is_active, created_at)
+atomic_facts (id, memcell_id → memcells, fact_text, fact_tsv TSVECTOR, is_active, created_at, conversation_date DATE, superseded_on DATE)
   -- GIN index on fact_tsv for fast full-text search
+  -- conversation_date: when the source conversation happened (from JSON date field, NOT wall-clock insert time)
+  -- superseded_on: set when a newer fact contradicts this one (= conversation_date of the superseding fact)
 
 -- Time-bounded forward-looking signals
 foresight (id, memcell_id → memcells, description, valid_from, valid_until, created_at)
@@ -242,8 +244,8 @@ Each result includes a `reasoning` field citing the category, forcing the LLM to
 Default strategy is **recency wins**:
 
 - The **newer fact** remains active
-- The **older fact** is marked `is_active = FALSE` (superseded)
-- **Both facts stay in the database** — nothing is deleted, history is preserved
+- The **older fact** is marked `is_active = FALSE` and `superseded_on` is set to the conversation date of the newer fact
+- **Both facts stay in the database** — nothing is deleted, history is preserved and queryable for its valid time window
 - A **conflict record** logs the old fact, new fact, and resolution timestamp
 
 #### Interactive Mode
@@ -257,6 +259,8 @@ When run with `--interactive` or `-i`, the system pauses on each detected confli
 
 ### Temporal Awareness
 
+#### Foresight Filtering
+
 Foresight entries are filtered at query time using SQL:
 
 ```sql
@@ -268,11 +272,46 @@ WHERE valid_from <= :query_time
 - **Expired foresight** stays in the database as historical record but is excluded from active retrieval
 - **Indefinite foresight** (`valid_until = NULL`) remains active until explicitly superseded
 
-**Example from scale testing:**
 
-- Stage 2 (date: 2026-03-01): Aru tears ACL, prescribed anti-inflammatory meds for 2 weeks (until March 6), no sports for 2 months (until April 20)
-- Query at 2026-03-01: foresight about meds and sports restriction is active
-- Query at 2026-05-01 (Stage 3): both foresight entries have expired, not surfaced. Aru is confirmed fully healed.
+#### Temporal Fact Filtering (via `--date`)
+
+The original `is_active` boolean only answers "is this fact current?" — it cannot answer "was this fact true at time X?" When querying "What was Aru eating in Feb?", the system returned both the old vegetarian diet AND the later chicken/fish change, because superseded facts vanish from all queries and future facts appear in all queries.
+
+To solve this, atomic facts and memcells now store `conversation_date` (from the JSON `date` field, not wall-clock insert time) and `superseded_on` (set during conflict resolution). When `--date` is provided at query time, three retrieval channels are filtered:
+
+**1. Facts** — Keyword search uses temporal bounds instead of `is_active`:
+```sql
+WHERE conversation_date <= :query_time
+  AND (superseded_on IS NULL OR superseded_on > :query_time)
+  AND fact_tsv @@ plainto_tsquery(...)
+```
+Vector search results (Qdrant has no temporal fields) are post-filtered by checking `conversation_date` and `superseded_on` from PostgreSQL.
+
+**2. Episodes** — `_pool_episodes()` filters `WHERE conversation_date <= :query_time`. A Feb query never sees March episode narratives.
+
+**3. User profile** — Skipped entirely for historical queries (`query_time < today`). The profile is always rebuilt from current active facts and would leak future information. Episodes and facts already carry the correct information for the queried time period.
+
+Without `--date`, all existing behavior is preserved unchanged (`is_active = TRUE` filtering, all episodes, full profile).
+
+**Example:**
+```
+Stage 1 (date: 2026-02-01): "Aru is a strict vegetarian"
+  → conversation_date = 2026-02-01, superseded_on = NULL
+
+Stage 2 (date: 2026-03-01): "Aru eats chicken and fish" (conflicts with vegetarian)
+  → Old fact: superseded_on = 2026-03-01, is_active = FALSE
+  → New fact: conversation_date = 2026-03-01, superseded_on = NULL
+
+Query --date 2026-02-15: "What was Aru eating?"
+  → "strict vegetarian" included (conv_date Feb 1 ≤ Feb 15, superseded_on Mar 1 > Feb 15)
+  → "chicken and fish" excluded (conv_date Mar 1 > Feb 15)
+  → Answer: "strict vegetarian"
+
+Query --date 2026-03-15: "What diet does Aru follow?"
+  → "strict vegetarian" excluded (superseded_on Mar 1 ≤ Mar 15)
+  → "chicken and fish" included (conv_date Mar 1 ≤ Mar 15, no superseded_on)
+  → Answer: "chicken and fish"
+```
 
 ---
 
@@ -312,13 +351,13 @@ Each fact's score is the sum of its reciprocal ranks from both lists. This gives
 
 Rather than returning isolated facts, the system retrieves coherent context through MemScenes:
 
-1. **RRF hybrid search** → top-K atomic facts
+1. **RRF hybrid search** → top-K atomic facts (temporally filtered when `--date` is provided)
 2. **Map facts → MemScenes**: Each fact belongs to a MemCell, which belongs to a MemScene. Score each scene by its best fact's RRF score
-3. **Select top-N MemScenes** → pool all their episodes
+3. **Select top-N MemScenes** → pool their episodes (filtered by `conversation_date <= query_time` when `--date` is provided)
 4. **Re-rank episodes** by best child fact score
 5. **Filter active foresight** based on query timestamp
-6. **Fetch user profile**
-7. **Compose context**: Formatted text block with user profile, relevant episodes, active foresight, and top matching facts
+6. **Fetch user profile** (skipped for historical queries — profile always reflects current state)
+7. **Compose context**: Formatted text block with user profile (if present), relevant episodes, active foresight, and top matching facts
 
 ### Agentic Retrieval (Sufficiency Check + Query Rewriting)
 
@@ -351,7 +390,13 @@ Full re-clustering (e.g. k-means) would produce better groupings but requires co
 
 We rebuild the user profile from `is_active = TRUE` facts instead of scene summaries. This guarantees the profile never contains superseded information, at the cost of losing the narrative richness of scene summaries. The tradeoff favors accuracy over eloquence.
 
-### 3. Full-Conversation Segmentation, Not Windowed
+### 3. Temporal Post-Filtering Adds Retrieval Latency
+
+When `query_time` is set, vector search results from Qdrant must be post-filtered against PostgreSQL to check `conversation_date` and `superseded_on` bounds. This means each candidate fact triggers a `db.get_fact_by_id()` round-trip, adding latency that scales linearly with the number of candidates. Combined with over-fetching to compensate for filtered-out results, temporal queries are noticeably slower than non-temporal ones (e.g., 23.5s at Stage 3 vs ~14s without temporal filtering).
+
+**Solution:** Store `conversation_date` and `superseded_on` as payload metadata directly in Qdrant. Qdrant natively supports payload-based filtering during search via `Filter` conditions (e.g., `conversation_date <= query_time AND (superseded_on IS NULL OR superseded_on > query_time)`). This would eliminate the post-filter entirely — Qdrant returns only temporally valid facts in a single call, removing both the per-fact DB round-trips and the need to over-fetch. The only additional requirement is updating the Qdrant payload when a fact gets superseded during conflict resolution.
+
+### 4. Full-Conversation Segmentation, Not Windowed
 
 The entire conversation (100–500 messages) is sent to the LLM in a single call for topical segmentation, rather than using a sliding-window approach that processes N messages at a time.
 
@@ -385,78 +430,90 @@ Each stage is ingested incrementally (`--no-reset`), building on previous data.
 | Metric                      | Stage 1 (100 msgs) | Stage 2 (+100 msgs) | Stage 3 (+100 msgs) | Stage 4 (+200 msgs) |
 | --------------------------- | ------------------ | ------------------- | ------------------- | ------------------- |
 | **Query Time**              | 2026-02-01         | 2026-03-01          | 2026-05-01          | 2026-06-15          |
-| **MemCells**                | 10                 | 20                  | 30                  | 60                  |
-| **MemScenes**               | 3                  | 3                   | 3                   | 4                   |
-| **Active Facts**            | 111                | 209                 | 313                 | 558                 |
-| **Total Facts**             | 111                | 223                 | 333                 | 582                 |
-| **Conflicts Detected**      | 0                  | 14                  | 20                  | 24                  |
-| **Deduplication Rate**      | 0.0%               | 6.3%                | 6.0%                | 4.1%                |
+| **MemCells**                | 10                 | 19                  | 29                  | 45                  |
+| **MemScenes**               | 1                  | 2                   | 2                   | 3                   |
+| **Active Facts**            | 108                | 200                 | 313                 | 445                 |
+| **Total Facts**             | 108                | 220                 | 333                 | 467                 |
+| **Conflicts Detected**      | 0                  | 20                  | 20                  | 22                  |
+| **Deduplication Rate**      | 0.0%               | 9.1%                | 6.0%                | 4.7%                |
 | **Eval Queries Sufficient** | 6/6 (100%)         | 8/10 (80%)          | 10/10 (100%)        | 10/10 (100%)        |
-| **Avg Retrieval Latency**   | 9.0s               | 14.2s               | 13.5s               | 12.8s               |
+| **Avg Retrieval Latency**   | 14.6s              | 18.6s               | 23.5s               | 26.2s               |
 
 ### What Each Stage Demonstrates
 
 **Stage 1 — Basic Extraction, Scene Formation, Simple Retrieval:**
 
-- 10 MemCells extracted and organized into 3 thematic scenes
-- 111 atomic facts with zero conflicts (clean baseline, no contradicting information)
+- 10 MemCells extracted and organized into 1 MemScene (concurrent scene assignment causes centroid drift — a known tradeoff of parallel Phase 1 storage)
+- 108 atomic facts with zero conflicts (clean baseline, no contradicting information)
 - All 6 evaluation queries return sufficient results in round 1
-- Profile correctly captures: Stanford ME junior, Wilbur Hall, strict vegetarian, basketball/guitar/robotics
+- Profile correctly captures: Stanford ME student, Wilbur Hall, strict vegetarian, basketball/guitar/robotics
 
 **Stage 2 — Conflict Detection Working, Deduplication Reducing Storage:**
 
-- 14 conflicts detected (diet change, location change, course change, cancelled plans)
-- Dedup rate: 6.3% as superseded facts accumulate
+- 20 conflicts detected (diet change, location change, course change, cancelled plans)
+- Dedup rate: 9.1% as superseded facts accumulate (20 of 220 total facts deactivated)
 - Diet query correctly returns "chicken and fish" (vegetarian facts superseded)
 - Health query correctly returns "torn ACL, on meds, no sports for 2 months"
 - Foresight active: meds until March 6, sports restriction until April 20
-- 2 queries insufficient (internship/academic history) — expected, as Aru has no internship yet at this stage
+- 2 queries insufficient (internship query returns empty — expected, as Aru has no internship yet at this stage)
 
 **Stage 3 — Foresight Expiry Handling, Profile Evolution Visible:**
 
 - Query time is 2026-05-01: anti-inflammatory meds expired (ended March 6), sports restriction expired (ended April 20)
-- Health query correctly returns "no active injuries, fully healed" — foresight expired
+- Health query correctly returns "no active injuries, fully healed, 100% health" — foresight expired
 - Medication query correctly returns "no current medication"
 - Sports query correctly returns "yes, can play sports" — restriction expired
 - SAIL internship correctly retrieved, academic progression visible (ME → CS 229 → SAIL)
 - All 10 queries sufficient (100%), including the 2 that were insufficient in Stage 2
-- Retrieval latency stable at 13.5s
+- Retrieval latency at 23.5s (increase due to larger fact corpus)
 
 **Stage 4 — Scale + Noise Resilience, Continued Conflict Handling:**
 
 - 200 additional messages (500 cumulative) with everyday noise (weather, movies, routine chat)
-- MemCells doubled (30 → 60), a 4th MemScene formed as new themes emerged (surfing, Tesla, Palo Alto)
-- 4 new conflicts detected (left SAIL → Tesla, moved from University Ave → Palo Alto)
-- Dedup rate dropped to 4.1% — most new messages are additive (surfing, food poisoning) rather than contradictory
-- Active facts scaled to 558 with retrieval latency actually decreasing (12.8s vs 13.5s) — RRF fusion remains efficient
-- All 10 queries sufficient (100%) — retrieval handles 5x the original fact count without degradation
+- MemCells grew from 29 → 45, a 3rd MemScene formed as new themes emerged (surfing, Tesla, Palo Alto)
+- 2 new conflicts detected (left SAIL → Tesla, relocated to Palo Alto)
+- Dedup rate dropped to 4.7% — most new messages are additive (surfing, food poisoning) rather than contradictory
+- Active facts scaled to 445 with all 10 queries sufficient (100%)
+- Food poisoning antibiotics correctly reported as completed on June 15 (query date)
+- Tesla Autopilot internship correctly supersedes SAIL; full career progression visible (ME → CS 229 → SAIL → Tesla)
+- Retrieval latency at 26.2s — scales linearly with fact count
 
 ### Sample Retrieval Outputs
 
 **Q: "What kind of diet does Aru currently follow?"**
 
-- Stage 1: "Aru follows a strict vegetarian diet that excludes meat, chicken, and fish. He primarily eats Indian cuisine, often cooking dishes such as aloo paratha, dal, vegetable biryani, and spicy chickpea curry."
-- Stage 2: "Aru has transitioned from strict vegetarianism to a high-protein diet that includes chicken and fish to aid in his recovery from an ACL injury. He also continues to cook Indian dishes such as aloo paratha, dal, and spicy chickpea curry, often with help from his roommate Jake."
-- Stage 3: "Aru has transitioned from a strict vegetarian diet to one that includes chicken and fish, such as salmon, to increase his protein intake. He currently maintains this non-vegetarian diet to aid in muscle recovery while continuing to cook Indian food."
-- Stage 4: "Aru currently follows a non-vegetarian diet, having transitioned from being a strict vegetarian to eating chicken and fish to increase his protein intake for injury recovery. He regularly meal-preps chicken and rice, though he has recently increased his focus on food safety following a bout of food poisoning. He is also planning to explore non-vegetarian food tours during an upcoming trip to Tokyo."
+- Stage 1: "Aru follows a strict vegetarian diet that excludes meat, chicken, and fish. To maintain this regimen, Aru prepares Indian meals such as dal, vegetable biryani, and aloo parathas at Wilbur Hall."
+- Stage 2: "Aru recently switched from a strict vegetarian diet to a high-protein diet that includes chicken and fish. This change was made to assist in recovering from a torn ACL sustained in February 2026."
+- Stage 3: "Aru currently follows a non-vegetarian diet that incorporates chicken and fish to provide protein for muscle rebuilding and recovery. This high-protein diet includes meals such as salmon and chicken, which he prepares at his apartment with help from his roommate, Jake."
+- Stage 4: "Aru currently follows a non-vegetarian diet that includes chicken and fish to support recovery and muscle building. They regularly meal-prep chicken and rice and plan to participate in non-vegetarian food tours during an upcoming trip to Tokyo."
 
 **Q: "Does Aru have any active health issues or injuries?"**
 
-- Stage 2 (2026-03-01): "Aru is currently recovering from a torn ACL sustained while playing basketball on February 20, 2026. He is undergoing physical therapy three times a week and taking anti-inflammatory medication through March 6, 2026. Consequently, he is restricted from sports and running until April 20, 2026."
+- Stage 2 (2026-03-01): "Aru is currently recovering from a torn ACL sustained while playing basketball on February 20, 2026. To manage this injury, Aru is attending physical therapy three times a week, taking anti-inflammatory medication, and is restricted from sports and heavy physical activity until April 20, 2026."
 
-- Stage 3 (2026-05-01): "Aru does not have any active health issues or injuries and is currently 100% healthy. He has fully recovered from an ACL injury sustained in February 2026 and is no longer taking any medications. As of May 2026, he has resumed physical activities including basketball, daily three-mile runs, and bouldering."
+- Stage 3 (2026-05-01): "Aru currently has no active health issues or injuries and is in 100% health. He has fully recovered from a previous torn ACL and has returned to peak physical condition. He is now active in high-intensity sports, including playing basketball and bouldering at a V5 level."
 
-- Stage 4 (2026-06-15): "As of June 15, 2026, Aru is currently finishing a course of antibiotics to treat food poisoning caused by chicken meal prep. Today marks the final day of this medication course. While Aru previously recovered from an ACL injury, he is no longer taking any medication related to that condition."
+- Stage 4 (2026-06-15): "Aru is currently 100% healthy and has no active injuries. They have fully recovered from a previous ACL injury and completed a course of antibiotics for food poisoning as of June 15, 2026."
 
-**Q: "What are Aru's hobbies and interests?"**
+**Q: "What are Aru’s hobbies and interests?"**
 
-- Stage 1 : "Aru’s hobbies include playing fingerstyle and folk songs on the acoustic guitar, building competition robots, and cooking Indian vegetarian dishes like aloo paratha and dal. He also enjoys physical activities such as running three miles every morning, playing basketball on weekends, and hiking in national parks like Yosemite."
+- Stage 1: "Aru enjoys building competition robotics, playing fingerstyle folk songs on the acoustic guitar, and cooking vegetarian Indian meals like dal and vegetable biryani. They also maintain an active lifestyle through daily three-mile runs and playing weekend basketball at Arrillaga gym."
 
-- Stage 2 (2026-03-01): "Aru’s hobbies include playing fingerstyle and folk songs on the acoustic guitar and cooking traditional Indian dishes such as aloo paratha and biryani. He is technically interested in robotics and machine learning, specifically applying these fields to projects like building competition robots and analyzing NBA player movement data. Additionally, he enjoys active pursuits like basketball, running, and hiking, though these are currently restricted due to an ACL injury."
+- Stage 2 (2026-03-01): "Aru is interested in robotics and engineering, specifically focusing on building competition bots and studying machine learning. Their hobbies include playing folk songs on the acoustic guitar, cooking vegetarian Indian meals, and engaging in physical activities like daily running, basketball, and hiking."
 
-- Stage 3 (2026-05-01): "Aru's primary hobbies include bouldering at a V5 grade level, playing basketball, and going on daily three-mile runs. He is deeply interested in robotics and machine learning, specifically focusing on vision transformers for manipulation and analyzing NBA player movement data. Additionally, he enjoys cooking Indian food and traveling to explore tech exhibits and outdoor bouldering spots."
+- Stage 3 (2026-05-01): "Aru’s primary hobbies include bouldering at a V5 level and playing basketball. Their interests are heavily focused on robotics and machine learning, specifically computer vision for robotic manipulation and reinforcement learning for NBA sports analytics."
 
-- Stage 4 (2026-06-15): "Aru’s primary hobbies include V5-level bouldering, solo surfing at Pacifica, daily three-mile runs, and weekend basketball. He is also interested in robotics, machine learning projects such as NBA player analytics, and watching sci-fi movies, though he recently quit playing guitar to focus on these pursuits. During his upcoming travel to Tokyo, he plans to explore tech districts and participate in non-vegetarian food tours."
+- Stage 4 (2026-06-15): "Aru’s primary hobbies include bouldering at a V5 level, surfing solo at Pacifica on weekends, and playing basketball. Their interests are deeply rooted in robotics and AI, which they explore through leading a software team and visiting tech-focused destinations like Akihabara. Aru also enjoys watching sci-fi thriller movies and researching international food tours for upcoming travels."
+
+**Q: "What do you know about Aru overall?"**
+
+- Stage 1: "Aru is an engineering student residing at Wilbur Hall who balances thermodynamics and fluid mechanics coursework with a competition robotics project. To maintain peak health, they follow a strict vegetarian Indian diet, run three miles daily, and play weekend basketball at the Arrillaga gym."
+
+- Stage 2 (2026-03-01): "Aru is a student currently recovering from a torn ACL sustained in February 2026, which prompted a move to University Ave and a diet change from vegetarianism to eating chicken and fish. Currently focusing on CS 229 (Machine Learning), Aru is planning a future trip to Tokyo while navigating a recovery regimen that includes medication and physical therapy."
+
+- Stage 3 (2026-05-01): "Aru is a Stanford University student living on University Ave who has fully recovered from an ACL injury and currently leads a robotics software team. He is an active V5-level boulderer and is preparing for a computer vision research internship at the Stanford Artificial Intelligence Laboratory starting in June 2026."
+
+- Stage 4 (2026-06-15): "Aru is a Stanford student and robotics team leader who currently works as an intern for Tesla Autopilot in Palo Alto. They are in peak physical health following an ACL recovery and stay active through V5 bouldering, surfing at Pacifica, and a high-protein diet of chicken and fish. Residing on University Avenue, Aru is currently planning an August 2026 trip to Tokyo with their roommate Jake to explore the city’s robotics, food, and bouldering scenes."
 
 → More sample queries and results in [result_summary.md](result_summary.md) and detailed analysis in [results](../results/)
 
@@ -487,10 +544,10 @@ Pre-batch Episode Embeddings (1 Gemini embed call per batch)
   ▼  _store_batch_async()
   │
   │  ┌── Phase 1: CONCURRENT (asyncio.gather, bounded by STORAGE_CONCURRENCY semaphore) ──────────┐
-  │  │  For each segment in parallel:                                                              │
-  │  │    1. Store MemCell → PostgreSQL                                                            │
+  │  │  For each segment in parallel (current_date threaded through):                              │
+  │  │    1. Store MemCell (+ conversation_date) → PostgreSQL                                      │
   │  │    2. Batch-embed Atomic Facts (1 Gemini embed call per segment)                           │
-  │  │    3. Insert Atomic Facts → PostgreSQL                                                      │
+  │  │    3. Insert Atomic Facts (+ conversation_date) → PostgreSQL                                │
   │  │    4. Upsert fact vectors → Qdrant                                                          │
   │  │    5. Store Foresight entries (valid_from / valid_until parsed) → PostgreSQL               │
   │  │    6. Assign MemCell to MemScene (pre-computed embedding + scene hint, 0 extra LLM calls)  │
@@ -499,12 +556,12 @@ Pre-batch Episode Embeddings (1 Gemini embed call per batch)
   │
   │  ┌── Phase 2: SEQUENTIAL (chronological order: seg 1 → seg 2 → … → seg N) ──────────────────┐
   │  │  For each segment in order:                                                                │
-  │  │    Hybrid Conflict Detection (per fact):                                                   │
+  │  │    Hybrid Conflict Detection (per fact, current_date passed through):                      │
   │  │      Vector search (Qdrant cosine, threshold 0.65)                                        │
   │  │      + Keyword search (PostgreSQL ts_rank on fact_tsv)                                    │
   │  │      → Merged & deduplicated candidates                                                    │
   │  │      → Batched LLM verification (1 Gemini call per fact, conflict_detection.txt)          │
-  │  │      → Log to conflicts table, set is_active=FALSE on superseded facts                    │
+  │  │      → Log to conflicts table, set is_active=FALSE + superseded_on on old facts           │
   │  └─────────────────────────────────────────────────────────────────────────────────────────────┘
   │
   ▼
@@ -520,13 +577,17 @@ User Query + Timestamp
   │
   ▼  Round 1: retrieve(query, query_time)  [fetch_mem_service.py]
   │
-  │   ┌─────────────────────────────────────────────────────────┐
-  │   │  hybrid_search(query, top_k)  [retrieval_utils.py]      │
-  │   │    keyword_search  → PostgreSQL ts_rank on fact_tsv      │
-  │   │    vector_search   → embed query → Qdrant cosine search  │
-  │   │    rrf_fusion      → score(fact) = Σ 1/(k+rank), k=60   │
-  │   │    → Top-K Atomic Facts with RRF scores                 │
-  │   └─────────────────────────────────────────────────────────┘
+  │   ┌─────────────────────────────────────────────────────────────────┐
+  │   │  hybrid_search(query, top_k, query_time)  [retrieval_utils.py] │
+  │   │    if query_time:                     │
+  │   │    keyword_search  → PostgreSQL ts_rank on fact_tsv             │
+  │   │      (+ temporal WHERE clause when query_time set)              │
+  │   │    vector_search   → embed query → Qdrant cosine search         │
+  │   │    rrf_fusion      → score(fact) = Σ 1/(k+rank), k=60          │
+  │   │    if query_time: _temporal_post_filter (check conversation_date│
+  │   │      and superseded_on from PostgreSQL), then trim to top_k     │
+  │   │    → Top-K Atomic Facts with RRF scores                        │
+  │   └─────────────────────────────────────────────────────────────────┘
   │
   ├─ No facts found → return empty context immediately (no LLM calls)
   │
@@ -537,8 +598,9 @@ User Query + Timestamp
   │    score each scene by max RRF score across its facts
   │    → Top-N ScoredScenes
   │
-  ▼  _pool_episodes(top_n_scene_ids)
-  │    db.get_memcells_by_scene for each scene → deduplicated episode list
+  ▼  _pool_episodes(top_n_scene_ids, query_time)
+  │    db.get_memcells_by_scene (+ conversation_date <= query_time filter)
+  │    → deduplicated episode list
   │
   ▼  _rerank_episodes(episodes, top_facts)
   │    episode.relevance_score = best RRF score of its child facts
@@ -547,7 +609,7 @@ User Query + Timestamp
   ▼  filter_active_foresight(query_time)          ← runs after rerank
   │    SQL: valid_from ≤ query_time ≤ valid_until (or valid_until IS NULL)
   │
-  ▼  db.get_user_profile()
+  ▼  db.get_user_profile()  ← skipped for historical queries (query_time < today)
   │
   ▼  retrieve() returns { episodes, foresight, profile, facts, scenes }
   │

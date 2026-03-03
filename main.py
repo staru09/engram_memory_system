@@ -39,7 +39,8 @@ def _extract_segment(seg: dict, current_date: str) -> dict:
 
 async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list[float],
                               semaphore: asyncio.Semaphore,
-                              loop: asyncio.AbstractEventLoop) -> dict:
+                              loop: asyncio.AbstractEventLoop,
+                              current_date: str = None) -> dict:
     """Phase 1: Store memcell, facts, vectors, foresight, scene (NO conflict detection).
 
     Runs concurrently across segments, bounded by semaphore.
@@ -55,7 +56,8 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
         print(f"       [phase1] Starting {seg_label}")
 
         # Store MemCell
-        cell = MemCell(episode_text=episode_text, raw_dialogue=seg["dialogue"], source_id=source_id)
+        cell = MemCell(episode_text=episode_text, raw_dialogue=seg["dialogue"],
+                       source_id=source_id, conversation_date=current_date)
         memcell_id = await loop.run_in_executor(_executor, db.insert_memcell, cell)
 
         # Batch-embed all facts
@@ -67,7 +69,7 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
         # Insert facts into PostgreSQL
         fact_ids = []
         for fact_text in atomic_facts:
-            fact = AtomicFact(memcell_id=memcell_id, fact_text=fact_text)
+            fact = AtomicFact(memcell_id=memcell_id, fact_text=fact_text, conversation_date=current_date)
             fact_id = await loop.run_in_executor(_executor, db.insert_atomic_fact, fact)
             fact_ids.append(fact_id)
 
@@ -113,7 +115,8 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
 
 
 async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: list[list[float]],
-                              source_id: str, interactive: bool) -> list[dict]:
+                              source_id: str, interactive: bool,
+                              current_date: str = None) -> list[dict]:
     """Two-phase storage: concurrent data insertion, then sequential conflict detection."""
     loop = asyncio.get_event_loop()
     semaphore = asyncio.Semaphore(STORAGE_CONCURRENCY)
@@ -121,7 +124,7 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
     # Phase 1 — Concurrent: store all segment data in parallel
     phase1_start = time.time()
     phase1_tasks = [
-        _store_segment_data(ext, source_id, emb, semaphore, loop)
+        _store_segment_data(ext, source_id, emb, semaphore, loop, current_date=current_date)
         for ext, emb in zip(batch_extractions, episode_embeddings)
     ]
     phase1_results = await asyncio.gather(*phase1_tasks)
@@ -136,7 +139,7 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
         seg_conflicts = 0
         for fact_id, fact_text, embedding in zip(p1["fact_ids"], p1["atomic_facts"], p1["embeddings"]):
             conflicts = await loop.run_in_executor(
-                _executor, detect_conflicts, fact_id, fact_text, embedding, interactive
+                _executor, detect_conflicts, fact_id, fact_text, embedding, interactive, current_date
             )
             seg_conflicts += len(conflicts)
         if seg_conflicts:
@@ -213,7 +216,8 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         store_start = time.time()
 
         batch_results = asyncio.run(
-            _store_batch_async(batch_extractions, episode_embeddings, source_id, interactive)
+            _store_batch_async(batch_extractions, episode_embeddings, source_id, interactive,
+                               current_date=current_date)
         )
         all_results.extend(batch_results)
         print(f"       Batch total: {time.time() - extract_start:.1f}s")
@@ -290,12 +294,20 @@ def main():
 
     elif command == "query":
         if len(sys.argv) < 3:
-            print("Usage: python main.py query \"your question here\"")
+            print("Usage: python main.py query \"your question here\" [--date YYYY-MM-DD] [--verbose]")
             return
         query = sys.argv[2]
 
         verbose = "--verbose" in sys.argv or "-v" in sys.argv
-        result = agentic_retrieve(query, verbose=verbose)
+
+        # Parse --date for temporal query filtering
+        query_time = None
+        for i, arg in enumerate(sys.argv):
+            if arg == "--date" and i + 1 < len(sys.argv):
+                query_time = datetime.strptime(sys.argv[i + 1], "%Y-%m-%d")
+                break
+
+        result = agentic_retrieve(query, query_time=query_time, verbose=verbose)
 
         if verbose:
             print("\n" + "=" * 60)
@@ -307,6 +319,11 @@ def main():
         prompt = f"""You are a helpful AI companion with memory of past conversations.
                     Answer the user's question using ONLY the memory context provided. Be concise and direct.
                     If the context doesn't contain relevant information, say so.
+
+                    IMPORTANT: The "Top Matching Facts" section contains the most reliable, temporally-filtered information.
+                    If episode narratives mention something that contradicts or goes beyond the facts, trust the facts.
+                    Only report what is CURRENTLY true — do not mention past states, previous values, or historical context
+                    unless the user explicitly asks about history.
 
                     === MEMORY CONTEXT  ===
                     {result['context']}

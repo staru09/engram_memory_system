@@ -74,7 +74,7 @@ def _ask_user_resolution(old_fact_text: str, new_fact_text: str, reasoning: str)
 
 
 def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: list[float],
-                     interactive: bool = False) -> list[int]:
+                     interactive: bool = False, current_date: str = None) -> list[int]:
     """
     Check if a newly inserted fact contradicts any existing facts.
 
@@ -84,6 +84,8 @@ def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: l
         new_fact_embedding: Pre-computed embedding of the new fact
         interactive: If True, ask the user how to resolve each conflict.
                      If False, auto-resolve with recency wins.
+        current_date: Date of the conversation that produced this fact (YYYY-MM-DD).
+                      Used to set superseded_on when deactivating old facts.
 
     Returns:
         List of old_fact_ids that were detected as conflicts.
@@ -155,7 +157,7 @@ def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: l
                 resolution="recency_wins",
             )
             db.insert_conflict(conflict)
-            db.deactivate_fact(candidate["fact_id"])
+            db.deactivate_fact(candidate["fact_id"], superseded_on=current_date)
             conflicted_ids.append(candidate["fact_id"])
             print(f"       CONFLICT RESOLVED: '{old_fact['fact_text']}' → superseded by '{new_fact_text}'")
 
@@ -166,7 +168,7 @@ def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: l
                 resolution="keep_old",
             )
             db.insert_conflict(conflict)
-            db.deactivate_fact(new_fact_id)
+            db.deactivate_fact(new_fact_id, superseded_on=current_date)
             conflicted_ids.append(new_fact_id)
             print(f"       CONFLICT RESOLVED: Kept '{old_fact['fact_text']}', discarded new")
 
@@ -180,10 +182,11 @@ def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: l
             print(f"       CONFLICT LOGGED: Both facts kept active")
 
         else:
-            db.deactivate_fact(candidate["fact_id"])
-            db.deactivate_fact(new_fact_id)
+            db.deactivate_fact(candidate["fact_id"], superseded_on=current_date)
+            db.deactivate_fact(new_fact_id, superseded_on=current_date)
 
-            corrected_fact = AtomicFact(memcell_id=old_fact["memcell_id"], fact_text=resolution)
+            corrected_fact = AtomicFact(memcell_id=old_fact["memcell_id"], fact_text=resolution,
+                                        conversation_date=current_date)
             corrected_id = db.insert_atomic_fact(corrected_fact)
             corrected_embedding = embed_text(resolution)
             vector_store.upsert_fact(corrected_id, old_fact["memcell_id"], corrected_embedding)

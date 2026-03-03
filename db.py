@@ -32,7 +32,8 @@ def init_schema():
             raw_dialogue    TEXT,
             created_at      TIMESTAMP DEFAULT NOW(),
             source_id       VARCHAR(100),
-            scene_id        INTEGER REFERENCES memscenes(id)
+            scene_id        INTEGER REFERENCES memscenes(id),
+            conversation_date DATE
         );
 
         CREATE TABLE IF NOT EXISTS atomic_facts (
@@ -41,7 +42,9 @@ def init_schema():
             fact_text       TEXT NOT NULL,
             fact_tsv        TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', fact_text)) STORED,
             is_active       BOOLEAN DEFAULT TRUE,
-            created_at      TIMESTAMP DEFAULT NOW()
+            created_at      TIMESTAMP DEFAULT NOW(),
+            conversation_date DATE,
+            superseded_on   DATE
         );
 
         CREATE INDEX IF NOT EXISTS idx_facts_tsv ON atomic_facts USING GIN (fact_tsv);
@@ -115,8 +118,8 @@ def insert_memcell(cell: MemCell) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO memcells (episode_text, raw_dialogue, source_id, scene_id) VALUES (%s, %s, %s, %s) RETURNING id",
-        (cell.episode_text, cell.raw_dialogue, cell.source_id, cell.scene_id)
+        "INSERT INTO memcells (episode_text, raw_dialogue, source_id, scene_id, conversation_date) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (cell.episode_text, cell.raw_dialogue, cell.source_id, cell.scene_id, cell.conversation_date)
     )
     cell_id = cur.fetchone()[0]
     conn.commit()
@@ -137,10 +140,16 @@ def update_memcell_scene(memcell_id: int, scene_id: int):
     conn.close()
 
 
-def get_memcells_by_scene(scene_id: int) -> list[dict]:
+def get_memcells_by_scene(scene_id: int, query_time=None) -> list[dict]:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM memcells WHERE scene_id = %s ORDER BY created_at", (scene_id,))
+    if query_time:
+        cur.execute(
+            "SELECT * FROM memcells WHERE scene_id = %s AND conversation_date <= %s ORDER BY created_at",
+            (scene_id, query_time)
+        )
+    else:
+        cur.execute("SELECT * FROM memcells WHERE scene_id = %s ORDER BY created_at", (scene_id,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -153,8 +162,8 @@ def insert_atomic_fact(fact: AtomicFact) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO atomic_facts (memcell_id, fact_text, is_active) VALUES (%s, %s, %s) RETURNING id",
-        (fact.memcell_id, fact.fact_text, fact.is_active)
+        "INSERT INTO atomic_facts (memcell_id, fact_text, is_active, conversation_date) VALUES (%s, %s, %s, %s) RETURNING id",
+        (fact.memcell_id, fact.fact_text, fact.is_active, fact.conversation_date)
     )
     fact_id = cur.fetchone()[0]
     conn.commit()
@@ -163,28 +172,46 @@ def insert_atomic_fact(fact: AtomicFact) -> int:
     return fact_id
 
 
-def deactivate_fact(fact_id: int):
+def deactivate_fact(fact_id: int, superseded_on: str = None):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE atomic_facts SET is_active = FALSE WHERE id = %s", (fact_id,))
+    if superseded_on:
+        cur.execute(
+            "UPDATE atomic_facts SET is_active = FALSE, superseded_on = %s WHERE id = %s",
+            (superseded_on, fact_id)
+        )
+    else:
+        cur.execute("UPDATE atomic_facts SET is_active = FALSE WHERE id = %s", (fact_id,))
     conn.commit()
     cur.close()
     conn.close()
 
 
-def keyword_search_facts(query: str, top_k: int = 10) -> list[dict]:
+def keyword_search_facts(query: str, top_k: int = 10, query_time=None) -> list[dict]:
     """Full-text search on atomic_facts using ts_rank."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("""
-        SELECT id, memcell_id, fact_text,
-               ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
-        FROM atomic_facts
-        WHERE is_active = TRUE
-          AND fact_tsv @@ plainto_tsquery('english', %s)
-        ORDER BY rank DESC
-        LIMIT %s
-    """, (query, query, top_k))
+    if query_time:
+        cur.execute("""
+            SELECT id, memcell_id, fact_text,
+                   ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
+            FROM atomic_facts
+            WHERE conversation_date <= %s
+              AND (superseded_on IS NULL OR superseded_on > %s)
+              AND fact_tsv @@ plainto_tsquery('english', %s)
+            ORDER BY rank DESC
+            LIMIT %s
+        """, (query, query_time, query_time, query, top_k))
+    else:
+        cur.execute("""
+            SELECT id, memcell_id, fact_text,
+                   ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
+            FROM atomic_facts
+            WHERE is_active = TRUE
+              AND fact_tsv @@ plainto_tsquery('english', %s)
+            ORDER BY rank DESC
+            LIMIT %s
+        """, (query, query, top_k))
     rows = cur.fetchall()
     cur.close()
     conn.close()

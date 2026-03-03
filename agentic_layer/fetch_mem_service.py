@@ -1,12 +1,3 @@
-"""MemScene-guided retrieval pipeline.
-
-1. RRF hybrid search over atomic facts → top-K facts
-2. Map facts → parent MemScenes, score scenes by best fact score
-3. Select top-N MemScenes → pool their episodes → re-rank by query similarity
-4. Apply foresight filtering (drop expired based on query timestamp)
-5. Compose context: episodes + active foresight + user profile
-"""
-
 from datetime import datetime
 from config import RETRIEVAL_TOP_K, SCENE_TOP_N
 import db
@@ -40,15 +31,17 @@ def _score_scenes(facts: list[dict]) -> list[dict]:
     return sorted(scene_scores.values(), key=lambda x: x["best_score"], reverse=True)
 
 
-def _pool_episodes(scene_ids: list[int]) -> list[dict]:
+def _pool_episodes(scene_ids: list[int], query_time=None) -> list[dict]:
     """
     Gather all episodes (MemCells) from the selected scenes.
+    When query_time is provided, only includes episodes from conversations
+    that happened on or before that date.
     Returns list of {memcell_id, episode_text, scene_id, created_at}.
     """
     episodes = []
     seen = set()
     for sid in scene_ids:
-        cells = db.get_memcells_by_scene(sid)
+        cells = db.get_memcells_by_scene(sid, query_time=query_time)
         for cell in cells:
             if cell["id"] not in seen:
                 seen.add(cell["id"])
@@ -108,8 +101,8 @@ def retrieve(query: str, query_time: datetime = None,
     if query_time is None:
         query_time = datetime.now()
 
-    # Step 1: RRF hybrid search over atomic facts
-    top_facts = hybrid_search(query, top_k_facts)
+    # Step 1: RRF hybrid search over atomic facts (temporal filtering applied when query_time set)
+    top_facts = hybrid_search(query, top_k_facts, query_time=query_time)
 
     if not top_facts:
         return {"episodes": [], "foresight": [], "profile": None, "facts": [], "scenes": []}
@@ -117,9 +110,9 @@ def retrieve(query: str, query_time: datetime = None,
     # Step 2: Score MemScenes by best fact score
     scored_scenes = _score_scenes(top_facts)
 
-    # Step 3: Select top-N scenes, pool their episodes
+    # Step 3: Select top-N scenes, pool their episodes (filtered by query_time)
     selected_scene_ids = [s["scene_id"] for s in scored_scenes[:top_n_scenes]]
-    all_episodes = _pool_episodes(selected_scene_ids)
+    all_episodes = _pool_episodes(selected_scene_ids, query_time=query_time)
 
     # Step 4: Re-rank episodes by fact scores (no extra embedding calls)
     ranked_episodes = _rerank_episodes(all_episodes, top_facts)
@@ -127,8 +120,9 @@ def retrieve(query: str, query_time: datetime = None,
     # Step 5: Foresight filtering
     active_foresight = filter_active_foresight(query_time)
 
-    # Step 6: Get user profile
-    profile = db.get_user_profile()
+    # Step 6: Get user profile (skip for historical queries — profile is always "current")
+    is_historical = query_time and query_time.date() < datetime.now().date()
+    profile = None if is_historical else db.get_user_profile()
 
     return {
         "episodes": ranked_episodes,
