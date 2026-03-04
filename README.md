@@ -44,13 +44,14 @@ python main.py ingest <conversation.json> [--reset] [--interactive]
 - `--interactive` — prompt for manual conflict resolution
 
 The JSON file should have the format:
+
 ```json
 {
   "source_id": "conversation_001",
   "date": "2026-02-01",
   "conversation": [
-    {"role": "user", "content": "..."},
-    {"role": "assistant", "content": "..."}
+    { "role": "user", "content": "..." },
+    { "role": "assistant", "content": "..." }
   ]
 }
 ```
@@ -148,4 +149,4 @@ scale_data/              # Generated conversation JSON files per stage
 results/                 # Evaluation report markdown files
 ```
 
-Project demo can be found here [demo](https://youtu.be/OKpCOntN71Y)
+Project demo can be found here [demo](https://www.loom.com/share/dd8f00ca8cb94d158791e0e474e9a0de)
