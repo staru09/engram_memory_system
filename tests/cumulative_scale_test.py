@@ -1,16 +1,3 @@
-"""Cumulative scale test: ingest stages incrementally and eval at each checkpoint.
-
-Flow:
-  Reset DB → Ingest Stage 1 (100 msgs) → Eval Stage 1
-           → Ingest Stage 2 (+100 = 200 msgs) → Eval Stages 1,2
-           → Ingest Stage 3 (+100 = 300 msgs) → Eval Stages 1,2,3
-           → Ingest Stage 4 (+200 = 500 msgs) → Eval Stages 1,2,3,4
-
-Usage:
-  python test/cumulative_scale_test.py
-  python test/cumulative_scale_test.py --skip-to 3      # Resume from stage 3 (no reset)
-"""
-
 import json
 import sys
 import os
@@ -21,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import db
 import vector_store
-from test.eval_queries import run_evaluation, STAGE_DEFAULTS
+from tests.eval_queries import run_evaluation, STAGE_DEFAULTS
 
 SCALE_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scale_data")
 
