@@ -203,14 +203,29 @@ def scenes():
         print(result.stdout.strip())
 
 
+def foresight():
+    """Print the full contents of the foresight table."""
+    query = "SELECT * FROM foresight ORDER BY valid_from ASC;"
+    result = subprocess.run(
+        ["docker", "exec", PG_CONTAINER, "psql", "-U", PG_USER, "-d", PG_DB, "-c", query],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error: {result.stderr.strip()}")
+    else:
+        print("=== Foresight ===")
+        print(result.stdout.strip())
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python db_manage.py <command>")
-        print("  status   — Show row/point counts")
-        print("  backup   — Backup PG + Qdrant to db_backup/")
-        print("  reset    — Wipe all data (docker compose down -v + up -d)")
-        print("  restore  — Reset + restore from db_backup/")
-        print("  scenes   — Show all MemScenes with assigned MemCell counts")
+        print("  status    — Show row/point counts")
+        print("  backup    — Backup PG + Qdrant to db_backup/")
+        print("  reset     — Wipe all data (docker compose down -v + up -d)")
+        print("  restore   — Reset + restore from db_backup/")
+        print("  scenes    — Show all MemScenes with assigned MemCell counts")
+        print("  foresight — Show all contents of the foresight table")
         return
 
     cmd = sys.argv[1]
@@ -224,6 +239,8 @@ def main():
         restore()
     elif cmd == "scenes":
         scenes()
+    elif cmd == "foresight":
+        foresight()
     else:
         print(f"Unknown command: {cmd}")
 

@@ -245,10 +245,10 @@ def run_evaluation(stage: int, query_time: datetime, tag: str = None):
     stats = db.get_system_stats()
 
     # Build output filename
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("results_testing", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     tag_part = f"_{tag}" if tag else f"_stage{stage}"
-    filename = f"results/eval{tag_part}_{timestamp}.md"
+    filename = f"results_testing/eval{tag_part}_{timestamp}.md"
 
     results = []
     total_latency = 0.0
