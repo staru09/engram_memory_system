@@ -14,15 +14,17 @@ from agentic_layer.memory_manager import agentic_retrieve
 _llm_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
-def _generate_answer(query: str, context: str) -> str:
+def _generate_answer(query: str, context: str, query_time=None) -> str:
     """Use retrieved context to generate a concise natural language answer."""
+    date_line = f"Query date: {query_time.strftime('%Y-%m-%d')}\n" if query_time else ""
     prompt = (
         f"Based ONLY on the following retrieved memory context, answer the question concisely in 2-3 sentences.\n"
         f"If the context doesn't contain relevant information, say 'No relevant information found.'\n"
-        f"IMPORTANT: The 'Top Matching Facts' section contains the most reliable, temporally-filtered information. "
-        f"If episode narratives mention something that contradicts or goes beyond the facts, trust the facts. "
-        f"Only report what is CURRENTLY true — do not mention past states, previous values, or historical context "
-        f"unless the question explicitly asks about history.\n\n"
+        f"IMPORTANT: All sources include dates. When information conflicts, trust the "
+        f"MOST RECENT source — more recent episodes and facts override older ones. "
+        f"Only report what is true at the query time, not past states. "
+        f"Do NOT cite source dates in your answer — just state what is true.\n\n"
+        f"{date_line}"
         f"Question: {query}\n\n"
         f"Context:\n{context}\n\n"
         f"Answer:"
@@ -264,7 +266,7 @@ def run_evaluation(stage: int, query_time: datetime, tag: str = None):
         total_latency += latency
 
         # Generate a concise answer from retrieved context
-        generated_answer = _generate_answer(q["query"], result["context"]) if result["context"] else "No context retrieved."
+        generated_answer = _generate_answer(q["query"], result["context"], query_time=query_time) if result["context"] else "No context retrieved."
         gen_latency = time.time() - start
         total_latency += (gen_latency - latency)  # add answer generation time
         latency = gen_latency

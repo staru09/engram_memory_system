@@ -1,7 +1,14 @@
 from datetime import datetime
 from config import RETRIEVAL_TOP_K, SCENE_TOP_N
 import db
-from agentic_layer.retrieval_utils import hybrid_search, filter_active_foresight
+from agentic_layer.retrieval_utils import (
+    hybrid_search, filter_active_foresight, cosine_similarity,
+)
+from agentic_layer.vectorize_service import embed_text
+
+
+EPISODE_SIM_THRESHOLD = 0.3
+EPISODE_MIN_KEEP = 3
 
 
 def _score_scenes(facts: list[dict]) -> list[dict]:
@@ -36,7 +43,7 @@ def _pool_episodes(scene_ids: list[int], query_time=None) -> list[dict]:
     Gather all episodes (MemCells) from the selected scenes.
     When query_time is provided, only includes episodes from conversations
     that happened on or before that date.
-    Returns list of {memcell_id, episode_text, scene_id, created_at}.
+    Returns list of {memcell_id, episode_text, scene_id, created_at, conversation_date, embedding}.
     """
     episodes = []
     seen = set()
@@ -50,6 +57,8 @@ def _pool_episodes(scene_ids: list[int], query_time=None) -> list[dict]:
                     "episode_text": cell["episode_text"],
                     "scene_id": sid,
                     "created_at": cell["created_at"],
+                    "conversation_date": cell.get("conversation_date"),
+                    "embedding": cell.get("embedding"),
                 })
     return episodes
 
@@ -74,7 +83,34 @@ def _rerank_episodes(episodes: list[dict], scored_facts: list[dict],
         ep["relevance_score"] = cell_scores.get(ep["memcell_id"], 0.0)
 
     episodes.sort(key=lambda x: x["relevance_score"], reverse=True)
-    return episodes[:top_k]
+    return [ep for ep in episodes[:top_k] if ep["relevance_score"] > 0]
+
+
+def _filter_episodes_by_similarity(episodes: list[dict],
+                                    query_embedding: list[float],
+                                    threshold: float = EPISODE_SIM_THRESHOLD,
+                                    min_keep: int = EPISODE_MIN_KEEP) -> list[dict]:
+    """
+    Filter episodes by cosine similarity to query embedding.
+    Keeps episodes above threshold, with a floor of min_keep.
+    """
+    if not episodes or not query_embedding:
+        return episodes
+
+    with_emb = [ep for ep in episodes if ep.get("embedding")]
+    without_emb = [ep for ep in episodes if not ep.get("embedding")]
+
+    for ep in with_emb:
+        ep["semantic_sim"] = cosine_similarity(query_embedding, ep["embedding"])
+
+    with_emb.sort(key=lambda x: x["semantic_sim"], reverse=True)
+    filtered = [ep for ep in with_emb if ep["semantic_sim"] >= threshold]
+
+    # Always keep at least min_keep episodes
+    if len(filtered) < min_keep:
+        filtered = with_emb[:min_keep]
+
+    return filtered + without_emb
 
 
 def retrieve(query: str, query_time: datetime = None,
@@ -82,12 +118,6 @@ def retrieve(query: str, query_time: datetime = None,
              top_n_scenes: int = SCENE_TOP_N) -> dict:
     """
     Full MemScene-guided retrieval pipeline.
-
-    Args:
-        query: The user's query.
-        query_time: Timestamp for foresight filtering (defaults to now).
-        top_k_facts: Number of top facts from hybrid search.
-        top_n_scenes: Number of top scenes to select.
 
     Returns:
         {
@@ -101,8 +131,12 @@ def retrieve(query: str, query_time: datetime = None,
     if query_time is None:
         query_time = datetime.now()
 
+    # Compute query embedding once — reused by vector search, foresight filter, episode filter
+    query_embedding = embed_text(query)
+
     # Step 1: RRF hybrid search over atomic facts (temporal filtering applied when query_time set)
-    top_facts = hybrid_search(query, top_k_facts, query_time=query_time)
+    top_facts = hybrid_search(query, top_k_facts, query_time=query_time,
+                              query_embedding=query_embedding)
 
     if not top_facts:
         return {"episodes": [], "foresight": [], "profile": None, "facts": [], "scenes": []}
@@ -114,15 +148,18 @@ def retrieve(query: str, query_time: datetime = None,
     selected_scene_ids = [s["scene_id"] for s in scored_scenes[:top_n_scenes]]
     all_episodes = _pool_episodes(selected_scene_ids, query_time=query_time)
 
-    # Step 4: Re-rank episodes by fact scores (no extra embedding calls)
+    # Step 4: Re-rank episodes by fact scores (no extra embedding calls) + zero-score filter
     ranked_episodes = _rerank_episodes(all_episodes, top_facts)
 
-    # Step 5: Foresight filtering
-    active_foresight = filter_active_foresight(query_time)
+    # Step 5: Semantic similarity filter on episodes
+    ranked_episodes = _filter_episodes_by_similarity(ranked_episodes, query_embedding)
 
-    # Step 6: Get user profile (skip for historical queries — profile is always "current")
-    is_historical = query_time and query_time.date() < datetime.now().date()
-    profile = None if is_historical else db.get_user_profile()
+    # Step 6: Foresight filtering (semantic similarity + dedup)
+    active_foresight = filter_active_foresight(query_time, query_embedding=query_embedding)
+
+    # Step 7: Get user profile (only for "now" queries — profile is always latest state)
+    is_temporal_query = query_time and query_time.date() != datetime.now().date()
+    profile = None if is_temporal_query else db.get_user_profile()
 
     return {
         "episodes": ranked_episodes,
@@ -150,12 +187,20 @@ def compose_context(retrieval_result: dict) -> str:
             parts.append("Traits: " + "; ".join(profile.implicit_traits))
         parts.append("")
 
-    # Relevant episodes
+    # Relevant episodes (P1: use conversation_date instead of created_at)
     episodes = retrieval_result.get("episodes", [])
     if episodes:
         parts.append("=== Relevant Memory Episodes ===")
         for i, ep in enumerate(episodes, 1):
-            date_str = ep["created_at"].strftime("%Y-%m-%d") if ep.get("created_at") else "unknown"
+            date_val = ep.get("conversation_date")
+            if hasattr(date_val, 'strftime'):
+                date_str = date_val.strftime("%Y-%m-%d")
+            elif date_val:
+                date_str = str(date_val)
+            elif ep.get("created_at"):
+                date_str = ep["created_at"].strftime("%Y-%m-%d")
+            else:
+                date_str = "unknown"
             parts.append(f"[{i}] ({date_str}) {ep['episode_text']}")
         parts.append("")
 
@@ -164,15 +209,17 @@ def compose_context(retrieval_result: dict) -> str:
     if foresight:
         parts.append("=== Active Foresight (time-valid) ===")
         for fs in foresight:
+            source = fs["source_date"].strftime("%Y-%m-%d") if hasattr(fs.get("source_date"), 'strftime') else (str(fs["source_date"]) if fs.get("source_date") else "unknown")
             until = fs["valid_until"].strftime("%Y-%m-%d") if fs.get("valid_until") else "indefinite"
-            parts.append(f"- {fs['description']} (valid until: {until})")
+            parts.append(f"- {fs['description']} (from: {source}, valid until: {until})")
         parts.append("")
 
-    # Top matching facts
+    # Top matching facts (P2: include conversation_date)
     facts = retrieval_result.get("facts", [])
     if facts:
         parts.append("=== Top Matching Facts ===")
         for f in facts[:5]:
-            parts.append(f"- {f['fact_text']} (score: {f['rrf_score']:.4f})")
+            date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
+            parts.append(f"- {f['fact_text']}{date_tag} (score: {f['rrf_score']:.4f})")
 
     return "\n".join(parts)

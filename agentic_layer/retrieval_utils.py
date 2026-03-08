@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, date
 from config import RRF_K, RETRIEVAL_TOP_K
 import db
@@ -5,20 +6,34 @@ import vector_store
 from agentic_layer.vectorize_service import embed_text
 
 
+FORESIGHT_MAX_RESULTS = 5
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two embedding vectors (pure Python)."""
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None) -> list[dict]:
     """
     PostgreSQL full-text search on atomic_facts using ts_rank.
-    Returns list of {fact_id, memcell_id, fact_text, rank}.
+    Returns list of {fact_id, memcell_id, fact_text, conversation_date, rank}.
     """
     return db.keyword_search_facts(query, top_k, query_time=query_time)
 
 
-def vector_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict]:
+def vector_search(query_embedding: list[float], top_k: int = RETRIEVAL_TOP_K) -> list[dict]:
     """
-    Qdrant cosine similarity search on atomic fact embeddings.
+    Qdrant cosine similarity search using a pre-computed query embedding.
     Returns list of {fact_id, memcell_id, score}.
     """
-    query_embedding = embed_text(query)
     return vector_store.search_facts(query_embedding, top_k)
 
 
@@ -27,28 +42,30 @@ def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
     """
     Reciprocal Rank Fusion: merge two ranked lists.
     score(d) = Σ 1/(k + rank) for each list where d appears.
-
-    Returns merged list sorted by RRF score descending.
+    Carries conversation_date through for downstream display.
     """
-    scores = {}  # fact_id -> {score, memcell_id, fact_text}
+    scores = {}  # fact_id -> {score, memcell_id, fact_text, conversation_date}
 
     # Score from keyword results
     for rank, result in enumerate(keyword_results, start=1):
         fid = result["id"]
         if fid not in scores:
             scores[fid] = {"fact_id": fid, "memcell_id": result["memcell_id"],
-                           "fact_text": result["fact_text"], "rrf_score": 0.0}
+                           "fact_text": result["fact_text"], "rrf_score": 0.0,
+                           "conversation_date": result.get("conversation_date")}
         scores[fid]["rrf_score"] += 1.0 / (k + rank)
 
     # Score from vector results
     for rank, result in enumerate(vector_results, start=1):
         fid = result["fact_id"]
         if fid not in scores:
-            # Need to fetch fact_text from DB
+            # Need to fetch fact_text and conversation_date from DB
             fact = db.get_fact_by_id(fid)
             fact_text = fact["fact_text"] if fact else ""
+            conv_date = fact.get("conversation_date") if fact else None
             scores[fid] = {"fact_id": fid, "memcell_id": result["memcell_id"],
-                           "fact_text": fact_text, "rrf_score": 0.0}
+                           "fact_text": fact_text, "rrf_score": 0.0,
+                           "conversation_date": conv_date}
         scores[fid]["rrf_score"] += 1.0 / (k + rank)
 
     # Sort by RRF score descending
@@ -56,54 +73,72 @@ def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
     return merged
 
 
-def _temporal_post_filter(facts: list[dict], query_time) -> list[dict]:
-    """Post-filter fused results by temporal bounds from DB.
-
-    Removes facts that didn't exist yet at query_time or were already superseded.
-    """
-    query_date = query_time.date() if isinstance(query_time, datetime) else query_time
-    filtered = []
-    for f in facts:
-        fact_row = db.get_fact_by_id(f["fact_id"])
-        if not fact_row:
-            continue
-        conv_date = fact_row.get("conversation_date")
-        if conv_date and conv_date > query_date:
-            continue  # Fact didn't exist yet at query time
-        sup_date = fact_row.get("superseded_on")
-        if sup_date and sup_date <= query_date:
-            continue  # Fact was already superseded by query time
-        filtered.append(f)
-    return filtered
-
-
-TEMPORAL_OVERFETCH_MULTIPLIER = 3
-
-
-def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None) -> list[dict]:
+def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K,
+                  query_time=None, query_embedding=None) -> list[dict]:
     """
     Run both keyword + vector search and fuse via RRF.
-    When query_time is provided, over-fetches then post-filters to compensate
-    for temporal filtering removing candidates.
+    Accepts optional pre-computed query_embedding to avoid redundant embed calls.
     """
+    if query_embedding is None:
+        query_embedding = embed_text(query)
+
+    kw_results = keyword_search(query, top_k, query_time=query_time)
+    vec_results = vector_search(query_embedding, top_k)
+    fused = rrf_fusion(kw_results, vec_results)
+
     if query_time:
-        fetch_k = top_k * TEMPORAL_OVERFETCH_MULTIPLIER
-        kw_results = keyword_search(query, fetch_k, query_time=query_time)
-        vec_results = vector_search(query, fetch_k)
-        fused = rrf_fusion(kw_results, vec_results)
-        fused = _temporal_post_filter(fused, query_time)
-        return fused[:top_k]
-    else:
-        kw_results = keyword_search(query, top_k)
-        vec_results = vector_search(query, top_k)
-        return rrf_fusion(kw_results, vec_results)
+        valid_ids = db.filter_facts_by_time(
+            [f["fact_id"] for f in fused], query_time
+        )
+        fused = [f for f in fused if f["fact_id"] in valid_ids]
+
+    return fused[:top_k]
 
 
-def filter_active_foresight(query_time: datetime = None) -> list[dict]:
+def filter_active_foresight(query_time: datetime = None,
+                            query_embedding: list[float] = None) -> list[dict]:
     """
-    Return foresight signals valid at the given time.
-    Filters out expired foresight.
+    Return foresight signals valid at query_time, ranked by semantic similarity
+    to the query and deduplicated.
+
+    Uses cosine similarity between query embedding and foresight embeddings
+    (stored at ingestion time). Near-duplicate foresight (pairwise cosine > 0.9)
+    are collapsed to the highest-scoring entry.
     """
     if query_time is None:
         query_time = datetime.now()
-    return db.get_active_foresight(query_time)
+
+    all_foresight = db.get_active_foresight(query_time)
+
+    if not query_embedding or not all_foresight:
+        return all_foresight
+
+    # Only consider foresight with stored embeddings
+    with_emb = [fs for fs in all_foresight if fs.get("embedding")]
+    without_emb = [fs for fs in all_foresight if not fs.get("embedding")]
+
+    # Score each foresight by cosine similarity to query
+    for fs in with_emb:
+        fs["query_sim"] = cosine_similarity(query_embedding, fs["embedding"])
+
+    # Sort by similarity descending
+    with_emb.sort(key=lambda x: x["query_sim"], reverse=True)
+
+    # Deduplicate: skip if cosine > 0.9 with any already-selected foresight
+    selected = []
+    for fs in with_emb:
+        if len(selected) >= FORESIGHT_MAX_RESULTS:
+            break
+        is_dup = any(
+            cosine_similarity(fs["embedding"], s["embedding"]) > 0.9
+            for s in selected
+        )
+        if not is_dup:
+            selected.append(fs)
+
+    # Fill remaining slots with non-embedded foresight (if any)
+    remaining = FORESIGHT_MAX_RESULTS - len(selected)
+    if remaining > 0 and without_emb:
+        selected.extend(without_emb[:remaining])
+
+    return selected

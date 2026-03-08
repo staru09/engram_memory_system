@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
@@ -33,7 +34,8 @@ def init_schema():
             created_at      TIMESTAMP DEFAULT NOW(),
             source_id       VARCHAR(100),
             scene_id        INTEGER REFERENCES memscenes(id),
-            conversation_date DATE
+            conversation_date DATE,
+            embedding       FLOAT8[]
         );
 
         CREATE TABLE IF NOT EXISTS atomic_facts (
@@ -55,7 +57,8 @@ def init_schema():
             description     TEXT NOT NULL,
             valid_from      TIMESTAMP,
             valid_until     TIMESTAMP,
-            created_at      TIMESTAMP DEFAULT NOW()
+            created_at      TIMESTAMP DEFAULT NOW(),
+            embedding       FLOAT8[]
         );
 
         CREATE TABLE IF NOT EXISTS conflicts (
@@ -193,7 +196,7 @@ def keyword_search_facts(query: str, top_k: int = 10, query_time=None) -> list[d
     cur = conn.cursor(cursor_factory=RealDictCursor)
     if query_time:
         cur.execute("""
-            SELECT id, memcell_id, fact_text,
+            SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
             FROM atomic_facts
             WHERE conversation_date <= %s
@@ -204,7 +207,7 @@ def keyword_search_facts(query: str, top_k: int = 10, query_time=None) -> list[d
         """, (query, query_time, query_time, query, top_k))
     else:
         cur.execute("""
-            SELECT id, memcell_id, fact_text,
+            SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
             FROM atomic_facts
             WHERE is_active = TRUE
@@ -235,19 +238,39 @@ def insert_foresight(f: Foresight) -> int:
 
 
 def get_active_foresight(query_time) -> list[dict]:
-    """Return foresight valid at the given time."""
+    """Return foresight valid at the given time, with embeddings and source conversation date."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
-        SELECT * FROM foresight
-        WHERE valid_from <= %s
-          AND (valid_until IS NULL OR valid_until >= %s)
-        ORDER BY valid_from DESC
-    """, (query_time, query_time))
+        SELECT f.*, m.conversation_date AS source_date FROM foresight f
+        JOIN memcells m ON f.memcell_id = m.id
+        WHERE m.conversation_date <= %s
+          AND f.valid_from <= %s
+          AND (f.valid_until IS NULL OR f.valid_until >= %s)
+        ORDER BY m.conversation_date DESC
+    """, (query_time, query_time, query_time))
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
+
+
+def update_foresight_embedding(foresight_id: int, embedding: list[float]):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE foresight SET embedding = %s WHERE id = %s", (embedding, foresight_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def update_memcell_embedding(memcell_id: int, embedding: list[float]):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE memcells SET embedding = %s WHERE id = %s", (embedding, memcell_id))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 
 # ── Conflict CRUD ──
@@ -323,6 +346,25 @@ def get_fact_by_id(fact_id: int) -> dict | None:
     cur.close()
     conn.close()
     return row
+
+
+def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
+    """Return subset of fact_ids that are temporally valid at query_time."""
+    if not fact_ids:
+        return set()
+    query_date = query_time.date() if isinstance(query_time, datetime) else query_time
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id FROM atomic_facts
+        WHERE id = ANY(%s)
+          AND (conversation_date IS NULL OR conversation_date <= %s)
+          AND (superseded_on IS NULL OR superseded_on > %s)
+    """, (fact_ids, query_date, query_date))
+    valid = {row[0] for row in cur.fetchall()}
+    cur.close()
+    conn.close()
+    return valid
 
 
 def get_system_stats() -> dict:

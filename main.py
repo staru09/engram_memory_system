@@ -77,8 +77,18 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
         for fact_id, embedding in zip(fact_ids, embeddings):
             await loop.run_in_executor(_executor, vector_store.upsert_fact, fact_id, memcell_id, embedding)
 
-        # Store foresight signals
-        for fs in foresight_signals:
+        # Store episode embedding in memcells table
+        await loop.run_in_executor(_executor, db.update_memcell_embedding, memcell_id, episode_embedding)
+
+        # Batch-embed foresight descriptions
+        foresight_texts = [fs["description"] for fs in foresight_signals]
+        foresight_embeddings = (
+            await loop.run_in_executor(_executor, embed_texts, foresight_texts)
+            if foresight_texts else []
+        )
+
+        # Store foresight signals with embeddings
+        for i, fs in enumerate(foresight_signals):
             valid_from = None
             valid_until = None
             try:
@@ -95,7 +105,10 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
                 memcell_id=memcell_id, description=fs["description"],
                 valid_from=valid_from, valid_until=valid_until,
             )
-            await loop.run_in_executor(_executor, db.insert_foresight, f)
+            foresight_id = await loop.run_in_executor(_executor, db.insert_foresight, f)
+            if i < len(foresight_embeddings):
+                await loop.run_in_executor(_executor, db.update_foresight_embedding,
+                                           foresight_id, foresight_embeddings[i])
 
         # Assign to MemScene (uses pre-computed embedding)
         scene_id = await loop.run_in_executor(
@@ -320,10 +333,13 @@ def main():
                     Answer the user's question using ONLY the memory context provided. Be concise and direct.
                     If the context doesn't contain relevant information, say so.
 
-                    IMPORTANT: The "Top Matching Facts" section contains the most reliable, temporally-filtered information.
-                    If episode narratives mention something that contradicts or goes beyond the facts, trust the facts.
-                    Only report what is CURRENTLY true — do not mention past states, previous values, or historical context
-                    unless the user explicitly asks about history.
+                    IMPORTANT: All sources include dates. When information conflicts, trust the
+                    MOST RECENT source — more recent episodes and facts override older ones.
+                    Only report what is true at the query time, not past states.
+                    Do NOT cite source dates in your answer — just state what is true.
+
+                    === QUERY DATE ===
+                    {query_time.strftime('%Y-%m-%d') if query_time else 'now'}
 
                     === MEMORY CONTEXT  ===
                     {result['context']}
