@@ -1,0 +1,5 @@
+{
+  "name": "WhatsApp Clone Frontend",
+  "description": "A WhatsApp Web-like frontend that connects to a FastAPI backend for chat, threads, and history.",
+  "requestFramePermissions": []
+}
