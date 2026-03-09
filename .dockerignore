@@ -1,0 +1,16 @@
+frontend/
+node_modules/
+.git/
+__pycache__/
+*.pyc
+.env
+.env.*
+design_docs/
+md_files/
+scale_data/
+tests/
+dummy_data.py
+docker-compose.yml
+render.yaml
+runtime.txt
+*.md
