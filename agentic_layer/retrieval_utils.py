@@ -1,6 +1,6 @@
 import math
 from datetime import datetime, date
-from config import RRF_K, RETRIEVAL_TOP_K
+from config import RRF_K, RETRIEVAL_TOP_K, RRF_KEYWORD_WEIGHT, RRF_VECTOR_WEIGHT, FACT_DEDUP_THRESHOLD
 import db
 import vector_store
 from agentic_layer.vectorize_service import embed_text
@@ -40,22 +40,23 @@ def vector_search(query_embedding: list[float], top_k: int = RETRIEVAL_TOP_K) ->
 def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
                k: int = RRF_K) -> list[dict]:
     """
-    Reciprocal Rank Fusion: merge two ranked lists.
-    score(d) = Σ 1/(k + rank) for each list where d appears.
+    Reciprocal Rank Fusion: merge two ranked lists with weighted contributions.
+    Keyword matches get RRF_KEYWORD_WEIGHT (default 1.5×), vector matches get
+    RRF_VECTOR_WEIGHT (default 1.0×).
     Carries conversation_date through for downstream display.
     """
     scores = {}  # fact_id -> {score, memcell_id, fact_text, conversation_date}
 
-    # Score from keyword results
+    # Score from keyword results (boosted weight)
     for rank, result in enumerate(keyword_results, start=1):
         fid = result["id"]
         if fid not in scores:
             scores[fid] = {"fact_id": fid, "memcell_id": result["memcell_id"],
                            "fact_text": result["fact_text"], "rrf_score": 0.0,
                            "conversation_date": result.get("conversation_date")}
-        scores[fid]["rrf_score"] += 1.0 / (k + rank)
+        scores[fid]["rrf_score"] += RRF_KEYWORD_WEIGHT / (k + rank)
 
-    # Score from vector results
+    # Score from vector results (baseline weight)
     for rank, result in enumerate(vector_results, start=1):
         fid = result["fact_id"]
         if fid not in scores:
@@ -66,7 +67,7 @@ def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
             scores[fid] = {"fact_id": fid, "memcell_id": result["memcell_id"],
                            "fact_text": fact_text, "rrf_score": 0.0,
                            "conversation_date": conv_date}
-        scores[fid]["rrf_score"] += 1.0 / (k + rank)
+        scores[fid]["rrf_score"] += RRF_VECTOR_WEIGHT / (k + rank)
 
     # Sort by RRF score descending
     merged = sorted(scores.values(), key=lambda x: x["rrf_score"], reverse=True)
@@ -93,6 +94,38 @@ def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K,
         fused = [f for f in fused if f["fact_id"] in valid_ids]
 
     return fused[:top_k]
+
+
+def deduplicate_facts(facts: list[dict], threshold: float = FACT_DEDUP_THRESHOLD) -> list[dict]:
+    """
+    Remove near-duplicate facts by pairwise cosine similarity.
+    Facts are already sorted by rrf_score descending — keeps highest-scored version.
+    """
+    if not facts:
+        return facts
+
+    fact_ids = [f["fact_id"] for f in facts]
+    embedding_map = vector_store.get_fact_embeddings(fact_ids)
+
+    selected = []
+    for fact in facts:
+        emb = embedding_map.get(fact["fact_id"])
+        if not emb:
+            selected.append(fact)
+            continue
+        fact["_embedding"] = emb
+        is_dup = any(
+            cosine_similarity(emb, s["_embedding"]) > threshold
+            for s in selected if s.get("_embedding")
+        )
+        if not is_dup:
+            selected.append(fact)
+
+    # Clean up temporary embedding data
+    for f in selected:
+        f.pop("_embedding", None)
+
+    return selected
 
 
 def filter_active_foresight(query_time: datetime = None,

@@ -275,6 +275,23 @@ def update_memcell_embedding(memcell_id: int, embedding: list[float]):
 
 # ── Conflict CRUD ──
 
+def get_superseded_map(fact_ids: list[int]) -> dict[int, int]:
+    """For a set of fact IDs, return {old_fact_id: new_fact_id} from conflicts table."""
+    if not fact_ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT old_fact_id, new_fact_id FROM conflicts
+        WHERE old_fact_id = ANY(%s)
+          AND resolution = 'recency_wins'
+    """, (fact_ids,))
+    result = {row[0]: row[1] for row in cur.fetchall()}
+    cur.close()
+    conn.close()
+    return result
+
+
 def insert_conflict(c: Conflict) -> int:
     conn = get_connection()
     cur = conn.cursor()

@@ -8,7 +8,7 @@ PG_CONTAINER = "evermemos_postgres"
 PG_USER = "evermemos"
 PG_DB = "evermemos"
 QDRANT_URL = "http://localhost:6333"
-BACKUP_DIR = "db_backup"
+BACKUP_DIR = "db_backup_v3"
 
 
 def status():

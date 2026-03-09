@@ -4,6 +4,16 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
 
 2. A list of **Atomic Facts** — discrete, verifiable statements extracted from the episode. Each fact should be self-contained and understandable without context.
 
+   IMPORTANT: Also extract **implied facts** that logically follow from stated information. Common patterns:
+   - New job at location X → person relocated to / lives near X
+   - Stopped doing activity → no longer does that activity
+   - Started new course/major → academic focus changed
+   - Injury preventing activity → cannot do that activity
+   - Cancelled plan → plan is no longer happening
+   - New living arrangement → no longer at previous location
+
+   Each implied fact should be stated as a present-tense assertion, not as an inference (e.g., "Aru lives in Palo Alto" not "Aru probably moved to Palo Alto because of the Tesla job").
+
 3. A list of **Foresight Signals** — forward-looking or time-bounded information (plans, temporary states, deadlines, scheduled events). For each, infer a reasonable validity interval:
    - Temporary illness (flu, cold): ~1-2 weeks
    - Medication course: duration mentioned or ~1-2 weeks

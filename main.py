@@ -336,6 +336,7 @@ def main():
                     IMPORTANT: All sources include dates. When information conflicts, trust the
                     MOST RECENT source — more recent episodes and facts override older ones.
                     Only report what is true at the query time, not past states.
+                    When asked about a future event, do not pick past facts from the context and vice-versa.
                     Do NOT cite source dates in your answer — just state what is true.
 
                     === QUERY DATE ===

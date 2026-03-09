@@ -73,6 +73,15 @@ def search_facts(query_embedding: list[float], top_k: int = 10) -> list[dict]:
     ]
 
 
+def get_fact_embeddings(fact_ids: list[int]) -> dict[int, list[float]]:
+    """Batch retrieve fact embeddings from Qdrant by point IDs."""
+    if not fact_ids:
+        return {}
+    client = get_client()
+    points = client.retrieve(collection_name="facts", ids=fact_ids, with_vectors=True)
+    return {p.id: p.vector for p in points}
+
+
 def search_nearest_scene(query_embedding: list[float], top_k: int = 1) -> list[dict]:
     """Find nearest MemScene centroid. Returns list of {memscene_id, score}."""
     client = get_client()

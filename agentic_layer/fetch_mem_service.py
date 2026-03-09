@@ -2,7 +2,7 @@ from datetime import datetime
 from config import RETRIEVAL_TOP_K, SCENE_TOP_N
 import db
 from agentic_layer.retrieval_utils import (
-    hybrid_search, filter_active_foresight, cosine_similarity,
+    hybrid_search, filter_active_foresight, cosine_similarity, deduplicate_facts,
 )
 from agentic_layer.vectorize_service import embed_text
 
@@ -141,6 +141,9 @@ def retrieve(query: str, query_time: datetime = None,
     if not top_facts:
         return {"episodes": [], "foresight": [], "profile": None, "facts": [], "scenes": []}
 
+    # Step 1b: Deduplicate near-identical facts (cosine > 0.9)
+    top_facts = deduplicate_facts(top_facts)
+
     # Step 2: Score MemScenes by best fact score
     scored_scenes = _score_scenes(top_facts)
 
@@ -214,9 +217,19 @@ def compose_context(retrieval_result: dict) -> str:
             parts.append(f"- {fs['description']} (from: {source}, valid until: {until})")
         parts.append("")
 
-    # Top matching facts (P2: include conversation_date)
+    # Top matching facts (P2: include conversation_date, I2: filter superseded)
     facts = retrieval_result.get("facts", [])
     if facts:
+        fact_ids = [f["fact_id"] for f in facts]
+        superseded_map = db.get_superseded_map(fact_ids)
+        fact_ids_in_context = set(fact_ids)
+
+        # Drop old facts whose replacement is already present
+        facts = [
+            f for f in facts
+            if not (f["fact_id"] in superseded_map and superseded_map[f["fact_id"]] in fact_ids_in_context)
+        ]
+
         parts.append("=== Top Matching Facts ===")
         for f in facts[:5]:
             date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
