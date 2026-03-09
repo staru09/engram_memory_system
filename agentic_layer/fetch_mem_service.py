@@ -9,6 +9,7 @@ from agentic_layer.vectorize_service import embed_text
 
 EPISODE_SIM_THRESHOLD = 0.3
 EPISODE_MIN_KEEP = 3
+EPISODE_STALENESS_THRESHOLD = 0.5  # drop episodes where >50% of facts are superseded
 
 
 def _score_scenes(facts: list[dict]) -> list[dict]:
@@ -113,6 +114,36 @@ def _filter_episodes_by_similarity(episodes: list[dict],
     return filtered + without_emb
 
 
+def _filter_stale_episodes(episodes: list[dict], min_keep: int = EPISODE_MIN_KEEP) -> list[dict]:
+    """
+    Filter out episodes where >50% of their facts have been superseded.
+    These episodes contain mostly outdated information and add noise.
+    """
+    if not episodes:
+        return episodes
+
+    memcell_ids = [ep["memcell_id"] for ep in episodes]
+    staleness_map = db.get_episode_staleness(memcell_ids)
+
+    fresh = []
+    stale = []
+    for ep in episodes:
+        staleness = staleness_map.get(ep["memcell_id"], 0.0)
+        ep["staleness"] = staleness
+        if staleness < EPISODE_STALENESS_THRESHOLD:
+            fresh.append(ep)
+        else:
+            stale.append(ep)
+
+    # Always keep at least min_keep episodes, preferring fresh ones
+    if len(fresh) >= min_keep:
+        return fresh
+    # Not enough fresh episodes — backfill with least-stale ones
+    stale.sort(key=lambda x: x["staleness"])
+    needed = min_keep - len(fresh)
+    return fresh + stale[:needed]
+
+
 def retrieve(query: str, query_time: datetime = None,
              top_k_facts: int = RETRIEVAL_TOP_K,
              top_n_scenes: int = SCENE_TOP_N) -> dict:
@@ -157,7 +188,10 @@ def retrieve(query: str, query_time: datetime = None,
     # Step 5: Semantic similarity filter on episodes
     ranked_episodes = _filter_episodes_by_similarity(ranked_episodes, query_embedding)
 
-    # Step 6: Foresight filtering (semantic similarity + dedup)
+    # Step 5b: Filter out stale episodes (>50% superseded facts)
+    ranked_episodes = _filter_stale_episodes(ranked_episodes)
+
+    # Step 6: Foresight filtering (semantic similarity + recency dedup)
     active_foresight = filter_active_foresight(query_time, query_embedding=query_embedding)
 
     # Step 7: Get user profile (only for "now" queries — profile is always latest state)

@@ -275,6 +275,30 @@ def update_memcell_embedding(memcell_id: int, embedding: list[float]):
 
 # ── Conflict CRUD ──
 
+def get_episode_staleness(memcell_ids: list[int]) -> dict[int, float]:
+    """For each memcell, return the fraction of its facts that have been superseded (0.0-1.0)."""
+    if not memcell_ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT memcell_id,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE is_active = FALSE) AS superseded
+        FROM atomic_facts
+        WHERE memcell_id = ANY(%s)
+        GROUP BY memcell_id
+    """, (memcell_ids,))
+    result = {}
+    for row in cur.fetchall():
+        total = row[1]
+        superseded = row[2]
+        result[row[0]] = superseded / total if total > 0 else 0.0
+    cur.close()
+    conn.close()
+    return result
+
+
 def get_superseded_map(fact_ids: list[int]) -> dict[int, int]:
     """For a set of fact IDs, return {old_fact_id: new_fact_id} from conflicts table."""
     if not fact_ids:

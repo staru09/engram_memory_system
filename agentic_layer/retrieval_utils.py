@@ -157,9 +157,44 @@ def filter_active_foresight(query_time: datetime = None,
     # Sort by similarity descending
     with_emb.sort(key=lambda x: x["query_sim"], reverse=True)
 
-    # Deduplicate: skip if cosine > 0.9 with any already-selected foresight
-    selected = []
+    # Recency dedup: for foresight about the same topic (cosine > 0.7),
+    # keep only the most recent source_date. This ensures newer foresight
+    # (e.g., "ACL injury" from Mar) supersedes older contradictory foresight
+    # (e.g., "perfect health" from Feb) even without explicit conflict detection.
+    def _get_source_date(fs):
+        sd = fs.get("source_date")
+        if sd is None:
+            return date.min
+        if isinstance(sd, datetime):
+            return sd.date()
+        if isinstance(sd, date):
+            return sd
+        try:
+            return datetime.strptime(str(sd), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return date.min
+
+    # Sort by source_date descending so newer items are processed first
+    with_emb.sort(key=lambda x: _get_source_date(x), reverse=True)
+
+    # First pass: recency dedup — for each topic cluster, keep only the newest
+    recency_deduped = []
     for fs in with_emb:
+        # Check if a more recent foresight about the same topic already exists
+        is_stale = any(
+            cosine_similarity(fs["embedding"], s["embedding"]) > 0.7
+            and _get_source_date(s) > _get_source_date(fs)
+            for s in recency_deduped
+        )
+        if not is_stale:
+            recency_deduped.append(fs)
+
+    # Re-sort by query similarity for final selection
+    recency_deduped.sort(key=lambda x: x["query_sim"], reverse=True)
+
+    # Second pass: near-duplicate dedup (>0.9) and select top results
+    selected = []
+    for fs in recency_deduped:
         if len(selected) >= FORESIGHT_MAX_RESULTS:
             break
         is_dup = any(
