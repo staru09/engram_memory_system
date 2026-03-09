@@ -18,6 +18,8 @@ PG_DB = os.getenv("PG_DB", "evermemos")
 # Qdrant
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+QDRANT_URL = os.getenv("QDRANT_URL", "")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 
 # Clustering
 SCENE_SIMILARITY_THRESHOLD = float(os.getenv("SCENE_SIMILARITY_THRESHOLD", "0.75"))

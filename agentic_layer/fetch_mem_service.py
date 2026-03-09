@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 from config import RETRIEVAL_TOP_K, SCENE_TOP_N
 import db
@@ -19,10 +20,14 @@ def _score_scenes(facts: list[dict]) -> list[dict]:
 
     Returns sorted list of {scene_id, best_score, fact_ids}.
     """
+    # Batch-fetch all memcells in a single query
+    memcell_ids = list({f["memcell_id"] for f in facts if f.get("memcell_id")})
+    memcells_map = db.get_memcells_by_ids(memcell_ids)
+
     scene_scores = {}  # scene_id -> {best_score, fact_ids}
 
     for fact in facts:
-        memcell = db.get_memcell_by_id(fact["memcell_id"])
+        memcell = memcells_map.get(fact["memcell_id"])
         if not memcell or not memcell.get("scene_id"):
             continue
 
@@ -46,21 +51,22 @@ def _pool_episodes(scene_ids: list[int], query_time=None) -> list[dict]:
     that happened on or before that date.
     Returns list of {memcell_id, episode_text, scene_id, created_at, conversation_date, embedding}.
     """
+    # Single batch query for all scenes
+    cells = db.get_memcells_by_scenes(scene_ids, query_time=query_time)
+
     episodes = []
     seen = set()
-    for sid in scene_ids:
-        cells = db.get_memcells_by_scene(sid, query_time=query_time)
-        for cell in cells:
-            if cell["id"] not in seen:
-                seen.add(cell["id"])
-                episodes.append({
-                    "memcell_id": cell["id"],
-                    "episode_text": cell["episode_text"],
-                    "scene_id": sid,
-                    "created_at": cell["created_at"],
-                    "conversation_date": cell.get("conversation_date"),
-                    "embedding": cell.get("embedding"),
-                })
+    for cell in cells:
+        if cell["id"] not in seen:
+            seen.add(cell["id"])
+            episodes.append({
+                "memcell_id": cell["id"],
+                "episode_text": cell["episode_text"],
+                "scene_id": cell["scene_id"],
+                "created_at": cell["created_at"],
+                "conversation_date": cell.get("conversation_date"),
+                "embedding": cell.get("embedding"),
+            })
     return episodes
 
 
@@ -162,41 +168,63 @@ def retrieve(query: str, query_time: datetime = None,
     if query_time is None:
         query_time = datetime.now()
 
+    retrieval_start = time.time()
+
     # Compute query embedding once — reused by vector search, foresight filter, episode filter
+    t0 = time.time()
     query_embedding = embed_text(query)
+    print(f"  [retrieval] Embed query: {time.time() - t0:.2f}s")
 
     # Step 1: RRF hybrid search over atomic facts (temporal filtering applied when query_time set)
+    t0 = time.time()
     top_facts = hybrid_search(query, top_k_facts, query_time=query_time,
                               query_embedding=query_embedding)
+    print(f"  [retrieval] Hybrid search ({len(top_facts)} facts): {time.time() - t0:.2f}s")
 
     if not top_facts:
+        print(f"  [retrieval] No facts found, returning empty. Total: {time.time() - retrieval_start:.2f}s")
         return {"episodes": [], "foresight": [], "profile": None, "facts": [], "scenes": []}
 
     # Step 1b: Deduplicate near-identical facts (cosine > 0.9)
+    before_dedup = len(top_facts)
     top_facts = deduplicate_facts(top_facts)
+    if len(top_facts) < before_dedup:
+        print(f"  [retrieval] Dedup: {before_dedup} → {len(top_facts)} facts")
 
     # Step 2: Score MemScenes by best fact score
+    t0 = time.time()
     scored_scenes = _score_scenes(top_facts)
+    print(f"  [retrieval] Score scenes ({len(scored_scenes)} scenes): {time.time() - t0:.2f}s")
 
     # Step 3: Select top-N scenes, pool their episodes (filtered by query_time)
+    t0 = time.time()
     selected_scene_ids = [s["scene_id"] for s in scored_scenes[:top_n_scenes]]
     all_episodes = _pool_episodes(selected_scene_ids, query_time=query_time)
+    print(f"  [retrieval] Pool episodes ({len(all_episodes)} from {len(selected_scene_ids)} scenes): {time.time() - t0:.2f}s")
 
     # Step 4: Re-rank episodes by fact scores (no extra embedding calls) + zero-score filter
     ranked_episodes = _rerank_episodes(all_episodes, top_facts)
 
     # Step 5: Semantic similarity filter on episodes
+    before_filter = len(ranked_episodes)
     ranked_episodes = _filter_episodes_by_similarity(ranked_episodes, query_embedding)
 
     # Step 5b: Filter out stale episodes (>50% superseded facts)
     ranked_episodes = _filter_stale_episodes(ranked_episodes)
+    if len(ranked_episodes) < before_filter:
+        print(f"  [retrieval] Episode filter: {before_filter} → {len(ranked_episodes)}")
 
     # Step 6: Foresight filtering (semantic similarity + recency dedup)
+    t0 = time.time()
     active_foresight = filter_active_foresight(query_time, query_embedding=query_embedding)
+    print(f"  [retrieval] Foresight ({len(active_foresight)} active): {time.time() - t0:.2f}s")
 
     # Step 7: Get user profile (only for "now" queries — profile is always latest state)
     is_temporal_query = query_time and query_time.date() != datetime.now().date()
     profile = None if is_temporal_query else db.get_user_profile()
+
+    print(f"  [retrieval] Total: {time.time() - retrieval_start:.2f}s "
+          f"({len(ranked_episodes)} episodes, {len(top_facts)} facts, {len(active_foresight)} foresight)")
 
     return {
         "episodes": ranked_episodes,

@@ -8,3 +8,4 @@ __pycache__
 .agent
 test/
 db_backup/
+prod.env

@@ -61,3 +61,21 @@ class UserProfile:
     explicit_facts: list[str] = field(default_factory=list)
     implicit_traits: list[str] = field(default_factory=list)
     updated_at: Optional[datetime] = None
+
+
+@dataclass
+class ChatThread:
+    id: str = ""
+    title: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+@dataclass
+class ChatMessage:
+    id: Optional[int] = None
+    thread_id: str = ""
+    role: str = ""  # 'user' or 'assistant'
+    content: str = ""
+    created_at: Optional[datetime] = None
+    ingested: bool = False

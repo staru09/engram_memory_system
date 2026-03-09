@@ -3,7 +3,7 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
-from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile
+from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage
 
 
 def get_connection():
@@ -75,6 +75,25 @@ def init_schema():
             implicit_traits JSONB DEFAULT '[]'::jsonb,
             updated_at      TIMESTAMP DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            id          VARCHAR(100) PRIMARY KEY,
+            title       VARCHAR(200),
+            created_at  TIMESTAMP DEFAULT NOW(),
+            updated_at  TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id          SERIAL PRIMARY KEY,
+            thread_id   VARCHAR(100) NOT NULL REFERENCES chat_threads(id),
+            role        VARCHAR(20) NOT NULL,
+            content     TEXT NOT NULL,
+            created_at  TIMESTAMP DEFAULT NOW(),
+            ingested    BOOLEAN DEFAULT FALSE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_messages_thread ON chat_messages (thread_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_messages_unprocessed ON chat_messages (ingested) WHERE ingested = FALSE;
     """)
     conn.commit()
     cur.close()
@@ -379,6 +398,38 @@ def get_memcell_by_id(memcell_id: int) -> dict | None:
     return row
 
 
+def get_memcells_by_ids(memcell_ids: list[int]) -> dict[int, dict]:
+    """Batch fetch multiple memcells by ID in a single query. Returns {id: row_dict}."""
+    if not memcell_ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM memcells WHERE id = ANY(%s)", (list(memcell_ids),))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row["id"]: row for row in rows}
+
+
+def get_memcells_by_scenes(scene_ids: list[int], query_time=None) -> list[dict]:
+    """Batch fetch memcells for multiple scenes in a single query."""
+    if not scene_ids:
+        return []
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    if query_time:
+        cur.execute(
+            "SELECT * FROM memcells WHERE scene_id = ANY(%s) AND conversation_date <= %s ORDER BY created_at",
+            (list(scene_ids), query_time)
+        )
+    else:
+        cur.execute("SELECT * FROM memcells WHERE scene_id = ANY(%s) ORDER BY created_at", (list(scene_ids),))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
 def get_fact_by_id(fact_id: int) -> dict | None:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -387,6 +438,19 @@ def get_fact_by_id(fact_id: int) -> dict | None:
     cur.close()
     conn.close()
     return row
+
+
+def get_facts_by_ids(fact_ids: list[int]) -> dict[int, dict]:
+    """Batch fetch multiple facts by ID in a single query. Returns {id: row_dict}."""
+    if not fact_ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM atomic_facts WHERE id = ANY(%s)", (list(fact_ids),))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row["id"]: row for row in rows}
 
 
 def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
@@ -406,6 +470,106 @@ def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
     cur.close()
     conn.close()
     return valid
+
+
+# ── Chat CRUD ──
+
+def create_thread(thread_id: str, title: str = None) -> str:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO chat_threads (id, title) VALUES (%s, %s) RETURNING id",
+        (thread_id, title)
+    )
+    tid = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return tid
+
+
+def list_threads(limit: int = 20) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT * FROM chat_threads ORDER BY updated_at DESC LIMIT %s", (limit,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def insert_message(thread_id: str, role: str, content: str) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO chat_messages (thread_id, role, content) VALUES (%s, %s, %s) RETURNING id",
+        (thread_id, role, content)
+    )
+    msg_id = cur.fetchone()[0]
+    cur.execute(
+        "UPDATE chat_threads SET updated_at = NOW() WHERE id = %s", (thread_id,)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return msg_id
+
+
+def get_thread_messages(thread_id: str, limit: int = 50) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT * FROM chat_messages WHERE thread_id = %s ORDER BY created_at DESC LIMIT %s",
+        (thread_id, limit)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return list(reversed(rows))  # chronological order
+
+
+def get_unprocessed_messages(thread_id: str) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT * FROM chat_messages WHERE thread_id = %s AND ingested = FALSE ORDER BY created_at",
+        (thread_id,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def mark_messages_ingested(message_ids: list[int]):
+    if not message_ids:
+        return
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE chat_messages SET ingested = TRUE WHERE id = ANY(%s)",
+        (message_ids,)
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_threads_with_old_unprocessed(minutes: int = 10) -> list[str]:
+    """Find threads with unprocessed messages older than the given minutes."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT DISTINCT thread_id FROM chat_messages
+        WHERE ingested = FALSE
+          AND created_at < NOW() - INTERVAL '%s minutes'
+    """, (minutes,))
+    thread_ids = [row[0] for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return thread_ids
 
 
 def get_system_stats() -> dict:

@@ -2,7 +2,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 )
-from config import QDRANT_HOST, QDRANT_PORT, EMBEDDING_DIM
+from config import QDRANT_HOST, QDRANT_PORT, QDRANT_URL, QDRANT_API_KEY, EMBEDDING_DIM
 
 
 _client = None
@@ -10,7 +10,10 @@ _client = None
 def get_client() -> QdrantClient:
     global _client
     if _client is None:
-        _client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, prefer_grpc=False, timeout=30)
+        if QDRANT_URL:
+            _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=30)
+        else:
+            _client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, prefer_grpc=False, timeout=30)
     return _client
 
 

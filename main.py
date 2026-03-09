@@ -13,7 +13,7 @@ from models import MemCell, AtomicFact, Foresight
 from memory_layer.memcell_extractor import extract_segments
 from memory_layer.episode_extractor import extract_episode
 from memory_layer.cluster_manager import assign_to_scene
-from memory_layer.profile_manager import detect_conflicts
+from memory_layer.profile_manager import detect_conflicts, detect_conflicts_batch
 from memory_layer.profile_extractor import update_user_profile
 from agentic_layer.vectorize_service import embed_text, embed_texts
 from agentic_layer.memory_manager import agentic_retrieve
@@ -143,18 +143,19 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
     phase1_results = await asyncio.gather(*phase1_tasks)
     print(f"\n       [Phase 1] Complete: {time.time() - phase1_start:.1f}s")
 
-    # Phase 2 — Sequential: conflict detection in chronological order
+    # Phase 2 — Sequential per segment, batched within segment (1 LLM call per segment)
     phase2_start = time.time()
-    print(f"       [Phase 2] Running conflict detection sequentially...")
+    print(f"       [Phase 2] Running conflict detection (segment-level batching)...")
     total_conflicts = 0
     conflict_counts = []
     for p1 in phase1_results:
-        seg_conflicts = 0
-        for fact_id, fact_text, embedding in zip(p1["fact_ids"], p1["atomic_facts"], p1["embeddings"]):
-            conflicts = await loop.run_in_executor(
-                _executor, detect_conflicts, fact_id, fact_text, embedding, interactive, current_date
-            )
-            seg_conflicts += len(conflicts)
+        facts_with_embeddings = [
+            {"fact_id": fid, "fact_text": ft, "embedding": emb}
+            for fid, ft, emb in zip(p1["fact_ids"], p1["atomic_facts"], p1["embeddings"])
+        ]
+        seg_conflicts = await loop.run_in_executor(
+            _executor, detect_conflicts_batch, facts_with_embeddings, interactive, current_date
+        )
         if seg_conflicts:
             print(f"       [phase2] {p1['seg_label']}: {seg_conflicts} conflicts detected")
         conflict_counts.append(seg_conflicts)

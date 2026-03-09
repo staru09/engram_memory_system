@@ -10,6 +10,7 @@ from agentic_layer.vectorize_service import embed_text
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "conflict_detection.txt")
+_BATCH_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "conflict_detection_batch.txt")
 
 # Facts with similarity above this threshold are checked for contradiction.
 
@@ -201,3 +202,239 @@ def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: l
             print(f"       CONFLICT RESOLVED: Both replaced with '{resolution}'")
 
     return conflicted_ids
+
+
+def _find_candidates_for_fact(fact_id: int, fact_text: str, fact_embedding: list[float]) -> list[dict]:
+    """Find conflict candidates for a single fact via hybrid search."""
+    seen = {fact_id}
+
+    # Vector search
+    similar = vector_store.search_facts(fact_embedding, top_k=5)
+    vector_cands = [
+        hit for hit in similar
+        if hit["fact_id"] not in seen and hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
+    ]
+    for hit in vector_cands:
+        seen.add(hit["fact_id"])
+
+    # Keyword search
+    keyword_hits = db.keyword_search_facts(fact_text, top_k=5)
+    keyword_cands = [
+        {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
+        for row in keyword_hits
+        if row["id"] not in seen
+    ]
+
+    merged = vector_cands + keyword_cands
+
+    # Batch fetch all candidate facts in a single DB call
+    candidate_ids = [cand["fact_id"] for cand in merged]
+    facts_map = db.get_facts_by_ids(candidate_ids)
+
+    # Keep only active
+    active = []
+    for cand in merged:
+        old_fact = facts_map.get(cand["fact_id"])
+        if old_fact and old_fact["is_active"]:
+            active.append({"fact_id": cand["fact_id"], "fact_text": old_fact["fact_text"]})
+    return active
+
+
+def _check_contradictions_batch_pairs(pairs: list[dict]) -> list[dict]:
+    """Single LLM call to check multiple new-fact-vs-old-fact pairs."""
+    prompt_template = _load_prompt_file(_BATCH_PROMPT_PATH)
+    pair_lines = []
+    for i, p in enumerate(pairs):
+        pair_lines.append(f'[{i}] New: "{p["new_fact_text"]}" | Existing: "{p["old_fact_text"]}"')
+    pair_list = "\n".join(pair_lines)
+    prompt = prompt_template.replace("{pair_list}", pair_list)
+
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    text = response.text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+        if text.endswith("```"):
+            text = text[:-3]
+    parsed = json.loads(text)
+    return parsed.get("results", [])
+
+
+def _load_prompt_file(path):
+    with open(path) as f:
+        return f.read()
+
+
+def _find_all_candidates_batched(facts_with_embeddings: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    Find conflict candidates for ALL facts in a segment with minimal DB round-trips.
+
+    Returns (all_pairs, pair_metadata) ready for the LLM call.
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    all_pairs = []
+    pair_metadata = []
+
+    # Run vector + keyword searches in parallel across all facts
+    search_start = time.time()
+
+    def _search_one_fact(new_fact):
+        """Run vector + keyword search for one fact, return raw candidates."""
+        fact_id = new_fact["fact_id"]
+        seen = {fact_id}
+
+        # Vector search (Qdrant Cloud)
+        similar = vector_store.search_facts(new_fact["embedding"], top_k=5)
+        vector_cands = [
+            hit for hit in similar
+            if hit["fact_id"] not in seen and hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
+        ]
+        for hit in vector_cands:
+            seen.add(hit["fact_id"])
+
+        # Keyword search (Supabase)
+        keyword_hits = db.keyword_search_facts(new_fact["fact_text"], top_k=5)
+        keyword_cands = [
+            {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
+            for row in keyword_hits
+            if row["id"] not in seen
+        ]
+
+        return {"new_fact": new_fact, "candidates": vector_cands + keyword_cands}
+
+    # Parallel search across all facts in the segment
+    search_results = []
+    with ThreadPoolExecutor(max_workers=min(len(facts_with_embeddings), 10)) as executor:
+        futures = {executor.submit(_search_one_fact, f): i for i, f in enumerate(facts_with_embeddings)}
+        search_results = [None] * len(facts_with_embeddings)
+        for future in as_completed(futures):
+            idx = futures[future]
+            search_results[idx] = future.result()
+
+    print(f"       [conflict] Candidate search: {time.time() - search_start:.1f}s")
+
+    # Collect all unique candidate fact IDs, batch-fetch from DB in one call
+    all_candidate_ids = set()
+    for sr in search_results:
+        for cand in sr["candidates"]:
+            all_candidate_ids.add(cand["fact_id"])
+
+    fetch_start = time.time()
+    facts_map = db.get_facts_by_ids(list(all_candidate_ids))
+    print(f"       [conflict] Batch fact fetch ({len(all_candidate_ids)} facts): {time.time() - fetch_start:.1f}s")
+
+    # Build pairs using the batch-fetched data
+    for sr in search_results:
+        new_fact = sr["new_fact"]
+        for cand in sr["candidates"]:
+            old_fact = facts_map.get(cand["fact_id"])
+            if old_fact and old_fact["is_active"]:
+                all_pairs.append({
+                    "new_fact_text": new_fact["fact_text"],
+                    "old_fact_text": old_fact["fact_text"],
+                })
+                pair_metadata.append({
+                    "new_fact_id": new_fact["fact_id"],
+                    "new_fact_text": new_fact["fact_text"],
+                    "old_fact_id": cand["fact_id"],
+                    "old_fact_text": old_fact["fact_text"],
+                })
+
+    return all_pairs, pair_metadata
+
+
+def detect_conflicts_batch(facts_with_embeddings: list[dict],
+                           interactive: bool = False,
+                           current_date: str = None) -> int:
+    """
+    Batch conflict detection: one LLM call per segment instead of one per fact.
+
+    Args:
+        facts_with_embeddings: list of {fact_id, fact_text, embedding}
+        interactive: user-resolution mode
+        current_date: for superseded_on dating
+
+    Returns:
+        Total number of conflicts detected.
+    """
+    import time
+
+    # Step 1: Parallel candidate search + single batch DB fetch
+    all_pairs, pair_metadata = _find_all_candidates_batched(facts_with_embeddings)
+
+    if not all_pairs:
+        return 0
+
+    # Step 2: Single LLM call for all pairs
+    llm_start = time.time()
+    results = _check_contradictions_batch_pairs(all_pairs)
+    print(f"       [conflict] LLM check ({len(all_pairs)} pairs): {time.time() - llm_start:.1f}s")
+
+    # Step 3: Process results and resolve conflicts
+    total_conflicts = 0
+    for result in results:
+        idx = result.get("pair_index")
+        if idx is None or idx < 0 or idx >= len(pair_metadata):
+            continue
+        if not result.get("is_contradiction", False):
+            continue
+
+        meta = pair_metadata[idx]
+        reasoning = result.get("reasoning", "N/A")
+
+        if interactive:
+            resolution = _ask_user_resolution(meta["old_fact_text"], meta["new_fact_text"], reasoning)
+        else:
+            resolution = "keep_new"
+
+        if resolution == "keep_new":
+            conflict = Conflict(
+                old_fact_id=meta["old_fact_id"],
+                new_fact_id=meta["new_fact_id"],
+                resolution="recency_wins",
+            )
+            db.insert_conflict(conflict)
+            db.deactivate_fact(meta["old_fact_id"], superseded_on=current_date)
+            total_conflicts += 1
+            print(f"       CONFLICT RESOLVED: '{meta['old_fact_text']}' → superseded by '{meta['new_fact_text']}'")
+
+        elif resolution == "keep_old":
+            conflict = Conflict(
+                old_fact_id=meta["old_fact_id"],
+                new_fact_id=meta["new_fact_id"],
+                resolution="keep_old",
+            )
+            db.insert_conflict(conflict)
+            db.deactivate_fact(meta["new_fact_id"], superseded_on=current_date)
+            total_conflicts += 1
+            print(f"       CONFLICT RESOLVED: Kept '{meta['old_fact_text']}', discarded new")
+
+        elif resolution == "keep_both":
+            conflict = Conflict(
+                old_fact_id=meta["old_fact_id"],
+                new_fact_id=meta["new_fact_id"],
+                resolution="keep_both",
+            )
+            db.insert_conflict(conflict)
+            print(f"       CONFLICT LOGGED: Both facts kept active")
+
+        else:
+            # Custom corrected fact
+            db.deactivate_fact(meta["old_fact_id"], superseded_on=current_date)
+            db.deactivate_fact(meta["new_fact_id"], superseded_on=current_date)
+            corrected_fact = AtomicFact(memcell_id=None, fact_text=resolution,
+                                        conversation_date=current_date)
+            corrected_id = db.insert_atomic_fact(corrected_fact)
+            corrected_embedding = embed_text(resolution)
+            vector_store.upsert_fact(corrected_id, None, corrected_embedding)
+            conflict = Conflict(
+                old_fact_id=meta["old_fact_id"],
+                new_fact_id=meta["new_fact_id"],
+                resolution=f"corrected:{corrected_id}",
+            )
+            db.insert_conflict(conflict)
+            total_conflicts += 1
+            print(f"       CONFLICT RESOLVED: Both replaced with '{resolution}'")
+
+    return total_conflicts

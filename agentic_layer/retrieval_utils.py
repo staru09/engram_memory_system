@@ -1,4 +1,5 @@
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date
 from config import RRF_K, RETRIEVAL_TOP_K, RRF_KEYWORD_WEIGHT, RRF_VECTOR_WEIGHT, FACT_DEDUP_THRESHOLD
 import db
@@ -48,20 +49,25 @@ def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
     scores = {}  # fact_id -> {score, memcell_id, fact_text, conversation_date}
 
     # Score from keyword results (boosted weight)
+    kw_ids = set()
     for rank, result in enumerate(keyword_results, start=1):
         fid = result["id"]
+        kw_ids.add(fid)
         if fid not in scores:
             scores[fid] = {"fact_id": fid, "memcell_id": result["memcell_id"],
                            "fact_text": result["fact_text"], "rrf_score": 0.0,
                            "conversation_date": result.get("conversation_date")}
         scores[fid]["rrf_score"] += RRF_KEYWORD_WEIGHT / (k + rank)
 
+    # Batch-fetch any vector-only facts (not already in keyword results)
+    vec_only_ids = [r["fact_id"] for r in vector_results if r["fact_id"] not in kw_ids]
+    vec_facts_map = db.get_facts_by_ids(vec_only_ids) if vec_only_ids else {}
+
     # Score from vector results (baseline weight)
     for rank, result in enumerate(vector_results, start=1):
         fid = result["fact_id"]
         if fid not in scores:
-            # Need to fetch fact_text and conversation_date from DB
-            fact = db.get_fact_by_id(fid)
+            fact = vec_facts_map.get(fid)
             fact_text = fact["fact_text"] if fact else ""
             conv_date = fact.get("conversation_date") if fact else None
             scores[fid] = {"fact_id": fid, "memcell_id": result["memcell_id"],
@@ -83,8 +89,13 @@ def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K,
     if query_embedding is None:
         query_embedding = embed_text(query)
 
-    kw_results = keyword_search(query, top_k, query_time=query_time)
-    vec_results = vector_search(query_embedding, top_k)
+    # Run keyword + vector search in parallel
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        kw_future = executor.submit(keyword_search, query, top_k, query_time)
+        vec_future = executor.submit(vector_search, query_embedding, top_k)
+        kw_results = kw_future.result()
+        vec_results = vec_future.result()
+
     fused = rrf_fusion(kw_results, vec_results)
 
     if query_time:
