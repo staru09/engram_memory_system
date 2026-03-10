@@ -4,6 +4,7 @@ node_modules/
 __pycache__/
 *.pyc
 .env
+prod.env
 .env.*
 design_docs/
 md_files/
@@ -17,4 +18,5 @@ runtime.txt
 utils/
 RESULTS_COMBINED/
 venv/
-prod.env
+db_backup/
+.github
