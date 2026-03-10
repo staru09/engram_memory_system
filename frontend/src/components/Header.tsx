@@ -1,11 +1,7 @@
 import React from 'react';
-import { Search, SquarePen } from 'lucide-react';
+import { Search } from 'lucide-react';
 
-interface HeaderProps {
-  onNewChat?: () => void;
-}
-
-export default function Header({ onNewChat }: HeaderProps) {
+export default function Header() {
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-[#f0f2f5] border-b border-gray-300 z-10">
       <div className="flex items-center gap-3">
@@ -15,11 +11,6 @@ export default function Header({ onNewChat }: HeaderProps) {
         <h1 className="text-[#111b21] font-medium text-base">Ira</h1>
       </div>
       <div className="flex items-center gap-4 text-[#54656f]">
-        {onNewChat && (
-          <button onClick={onNewChat} className="p-2 hover:bg-gray-200 rounded-full transition-colors" title="New Chat">
-            <SquarePen size={20} />
-          </button>
-        )}
         <button className="p-2 hover:bg-gray-200 rounded-full transition-colors">
           <Search size={20} />
         </button>

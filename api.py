@@ -188,9 +188,10 @@ def list_threads_endpoint(limit: int = 20):
 
 
 @app.get("/threads/{thread_id}/messages")
-def get_messages(thread_id: str, limit: int = 50):
-    messages = db.get_thread_messages(thread_id, limit)
-    return {"messages": messages}
+def get_messages(thread_id: str, limit: int = 50, before_id: int = None):
+    messages = db.get_thread_messages(thread_id, limit, before_id)
+    has_more = len(messages) == limit
+    return {"messages": messages, "has_more": has_more}
 
 
 @app.post("/chat")

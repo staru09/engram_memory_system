@@ -31,8 +31,10 @@ export const api = {
     return response.json();
   },
 
-  async getHistory(threadId: string): Promise<{ messages: ChatMessage[] }> {
-    const response = await fetch(`${API_BASE_URL}/threads/${threadId}/messages`);
+  async getHistory(threadId: string, beforeId?: number): Promise<{ messages: ChatMessage[]; has_more: boolean }> {
+    const params = new URLSearchParams({ limit: '50' });
+    if (beforeId) params.append('before_id', beforeId.toString());
+    const response = await fetch(`${API_BASE_URL}/threads/${threadId}/messages?${params}`);
     if (!response.ok) throw new Error('Failed to fetch history');
     return response.json();
   },

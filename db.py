@@ -527,13 +527,19 @@ def insert_message(thread_id: str, role: str, content: str) -> int:
     return msg_id
 
 
-def get_thread_messages(thread_id: str, limit: int = 50) -> list[dict]:
+def get_thread_messages(thread_id: str, limit: int = 50, before_id: int = None) -> list[dict]:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        "SELECT * FROM chat_messages WHERE thread_id = %s ORDER BY created_at DESC LIMIT %s",
-        (thread_id, limit)
-    )
+    if before_id:
+        cur.execute(
+            "SELECT * FROM chat_messages WHERE thread_id = %s AND id < %s ORDER BY id DESC LIMIT %s",
+            (thread_id, before_id, limit)
+        )
+    else:
+        cur.execute(
+            "SELECT * FROM chat_messages WHERE thread_id = %s ORDER BY id DESC LIMIT %s",
+            (thread_id, limit)
+        )
     rows = cur.fetchall()
     cur.close()
     conn.close()

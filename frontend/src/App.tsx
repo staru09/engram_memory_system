@@ -17,7 +17,19 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const threadIdRef = useRef<string | null>(null);
+
+  const formatMessages = (history: { id?: number; role: string; content: string; created_at?: string }[]) =>
+    history.map((msg, index) => ({
+      id: (msg.id || index).toString(),
+      text: msg.content,
+      sender: (msg.role === 'user' ? 'user' : 'bot') as 'user' | 'bot',
+      timestamp: formatTimestamp(msg.created_at),
+      status: msg.role === 'user' ? 'read' as const : undefined,
+      dbId: msg.id,
+    }));
 
   // Initialize: restore or create a thread, then load history
   useEffect(() => {
@@ -35,18 +47,12 @@ export default function App() {
 
         threadIdRef.current = threadId;
 
-        // Load chat history for this thread
-        const { messages: history } = await api.getHistory(threadId);
+        // Load latest messages for this thread
+        const { messages: history, has_more } = await api.getHistory(threadId);
         if (history && history.length > 0) {
-          const formatted = history.map((msg, index) => ({
-            id: (msg.id || index).toString(),
-            text: msg.content,
-            sender: (msg.role === 'user' ? 'user' : 'bot') as 'user' | 'bot',
-            timestamp: formatTimestamp(msg.created_at),
-            status: msg.role === 'user' ? 'read' as const : undefined,
-          }));
-          setMessages(formatted);
+          setMessages(formatMessages(history));
         }
+        setHasMore(has_more);
       } catch (error) {
         console.log('Backend not reachable, starting with empty chat.');
         // Still try to set a thread ID for when backend comes back
@@ -60,12 +66,32 @@ export default function App() {
     init();
   }, []);
 
+  const loadOlderMessages = async () => {
+    if (!threadIdRef.current || !hasMore || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const oldestMsg = messages[0];
+      const beforeId = oldestMsg?.dbId;
+      if (!beforeId) return;
+      const { messages: older, has_more } = await api.getHistory(threadIdRef.current, beforeId);
+      if (older && older.length > 0) {
+        setMessages(prev => [...formatMessages(older), ...prev]);
+      }
+      setHasMore(has_more);
+    } catch (error) {
+      console.error('Failed to load older messages:', error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
   const handleNewChat = async () => {
     try {
       const { thread_id } = await api.createThread();
       threadIdRef.current = thread_id;
       localStorage.setItem(THREAD_ID_KEY, thread_id);
       setMessages([]);
+      setHasMore(false);
     } catch (error) {
       console.error('Failed to create new thread:', error);
     }
@@ -124,8 +150,8 @@ export default function App() {
 
   return (
     <div className="font-sans flex flex-col w-full h-[100dvh] overflow-hidden bg-[#efeae2] relative">
-      <Header onNewChat={handleNewChat} />
-      <ChatArea messages={messages} isLoading={isLoading} />
+      <Header />
+      <ChatArea messages={messages} isLoading={isLoading} hasMore={hasMore} isLoadingMore={isLoadingMore} onLoadMore={loadOlderMessages} />
       <MessageInput 
           inputText={inputText} 
           setInputText={setInputText} 
