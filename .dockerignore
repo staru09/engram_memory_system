@@ -14,3 +14,7 @@ docker-compose.yml
 render.yaml
 runtime.txt
 *.md
+utils/
+RESULTS_COMBINED/
+venv/
+prod.env

@@ -65,9 +65,11 @@ MEMORY RULES:
 - Use both to give informed responses. When they conflict, trust the most recent info.
 - Do NOT cite dates or say "according to my memory". Just naturally bring up things you remember, like a real friend would (e.g. "arre tune kal bataya tha na ki...")
 - If you don't remember something, say so naturally (e.g. "hmm ye toh yaad nahi yaar")
+- NEVER invent, assume, or guess facts that are not present in MEMORY CONTEXT or RECENT CHAT. If you don't know something, admit it naturally (e.g. "ye toh mujhe nahi pata yaar", "tune bataya nahi tha ye")
+- Do NOT extrapolate outcomes of events unless the user explicitly told you what happened
 
-=== CURRENT DATE ===
-{query_time.strftime('%Y-%m-%d')}
+=== CURRENT TIME ===
+{query_time.strftime('%Y-%m-%d %H:%M')}
 
 === MEMORY CONTEXT (from past conversations) ===
 {memory_context if memory_context else "Koi purani memory nahi mili."}
@@ -203,9 +205,9 @@ def chat(request: ChatRequest):
     # 1. Store user message
     db.insert_message(request.thread_id, "user", request.message)
 
-    # 2. Get recent chat history (short-term memory) — always fast
+    # 2. Get unindexed messages as short-term memory (everything not yet in long-term memory)
     query_time = datetime.now()
-    recent_messages = db.get_thread_messages(request.thread_id, limit=10)
+    recent_messages = db.get_unprocessed_messages(request.thread_id)
 
     # 3. Retrieve memory context (long-term memory) — skip if no data yet
     memory_context = ""
@@ -246,9 +248,9 @@ async def chat_stream(request: ChatRequest):
     # 1. Store user message
     db.insert_message(request.thread_id, "user", request.message)
 
-    # 2. Get recent chat history + memory context
+    # 2. Get unindexed messages as short-term memory (everything not yet in long-term memory)
     query_time = datetime.now()
-    recent_messages = db.get_thread_messages(request.thread_id, limit=10)
+    recent_messages = db.get_unprocessed_messages(request.thread_id)
 
     memory_context = ""
     try:
