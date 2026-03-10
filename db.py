@@ -474,6 +474,16 @@ def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
 
 # ── Chat CRUD ──
 
+def get_thread(thread_id: str) -> dict | None:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM chat_threads WHERE id = %s", (thread_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
 def create_thread(thread_id: str, title: str = None) -> str:
     conn = get_connection()
     cur = conn.cursor()

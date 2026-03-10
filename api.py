@@ -195,6 +195,10 @@ def get_messages(thread_id: str, limit: int = 50):
 
 @app.post("/chat")
 def chat(request: ChatRequest):
+    # 0. Ensure thread exists (handles stale localStorage after DB reset)
+    if not db.get_thread(request.thread_id):
+        db.create_thread(request.thread_id)
+
     # 1. Store user message
     db.insert_message(request.thread_id, "user", request.message)
 
@@ -234,6 +238,10 @@ def chat(request: ChatRequest):
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
+    # 0. Ensure thread exists (handles stale localStorage after DB reset)
+    if not db.get_thread(request.thread_id):
+        db.create_thread(request.thread_id)
+
     # 1. Store user message
     db.insert_message(request.thread_id, "user", request.message)
 
