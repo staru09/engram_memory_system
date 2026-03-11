@@ -4,15 +4,20 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
 
 2. A list of **Atomic Facts** — discrete, verifiable statements extracted from the episode. Each fact should be self-contained and understandable without context.
 
-   IMPORTANT: Also extract **implied facts** that logically follow from stated information. Common patterns:
-   - New job at location X → person relocated to / lives near X
+   IMPORTANT: Also extract **implied facts** that logically follow from EXPLICITLY stated information. Common patterns:
    - Stopped doing activity → no longer does that activity
    - Started new course/major → academic focus changed
    - Injury preventing activity → cannot do that activity
    - Cancelled plan → plan is no longer happening
    - New living arrangement → no longer at previous location
 
-   Each implied fact should be stated as a present-tense assertion, not as an inference (e.g., "Aru lives in Palo Alto" not "Aru probably moved to Palo Alto because of the Tesla job").
+   CRITICAL RULES for fact extraction:
+   - Extract ONLY what is explicitly stated or directly implied. Do NOT over-infer.
+   - NEVER infer residence/location from casual mentions. "I go to a park in Dwarka" does NOT mean "lives in Dwarka". "I work at Google Bangalore" does NOT mean "lives in Bangalore" unless explicitly stated.
+   - NEVER escalate frequency: mentioning something once or twice does NOT make it a habit, preference, or permanent state.
+   - NEVER conflate: visiting a place ≠ living there, trying food ≠ liking it, mentioning a person ≠ being close to them.
+   - Preserve the ACTION CONTEXT: "likes to visit X", "ordered from Y", "travelled to Z" — keep the verb that shows the relationship.
+   - Each fact should be stated as a present-tense assertion (e.g., "Aru likes to visit DDA park in Dwarka sector 10" NOT "Aru lives in Dwarka").
 
 3. A list of **Foresight Signals** — forward-looking or time-bounded information (plans, temporary states, deadlines, scheduled events). For each, infer a reasonable validity interval:
    - Temporary illness (flu, cold): ~1-2 weeks

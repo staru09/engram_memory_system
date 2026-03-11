@@ -9,7 +9,9 @@ const THREAD_ID_KEY = 'engram_thread_id';
 
 function formatTimestamp(dateStr?: string): string {
   if (!dateStr) return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
-  const d = new Date(dateStr);
+  // DB stores UTC but without 'Z' suffix — append it so browser converts to local time
+  const utcStr = dateStr.endsWith('Z') || dateStr.includes('+') ? dateStr : dateStr + 'Z';
+  const d = new Date(utcStr);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }).toLowerCase();
 }
 

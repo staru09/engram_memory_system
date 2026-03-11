@@ -1,4 +1,5 @@
 import math
+import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date
 from config import RRF_K, RETRIEVAL_TOP_K, RRF_KEYWORD_WEIGHT, RRF_VECTOR_WEIGHT, FACT_DEDUP_THRESHOLD
@@ -8,6 +9,26 @@ from agentic_layer.vectorize_service import embed_text
 
 
 FORESIGHT_MAX_RESULTS = 5
+FORESIGHT_CACHE_TTL = 60  # seconds
+
+_foresight_cache = {"data": None, "ts": 0}
+
+
+def _get_foresight_cached(query_time) -> list[dict]:
+    """Return foresight with in-memory caching (60s TTL)."""
+    now = _time.time()
+    if _foresight_cache["data"] is not None and now - _foresight_cache["ts"] < FORESIGHT_CACHE_TTL:
+        return _foresight_cache["data"]
+    data = db.get_active_foresight(query_time)
+    _foresight_cache["data"] = data
+    _foresight_cache["ts"] = now
+    return data
+
+
+def invalidate_foresight_cache():
+    """Call after ingestion to force fresh foresight on next query."""
+    _foresight_cache["data"] = None
+    _foresight_cache["ts"] = 0
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -152,7 +173,7 @@ def filter_active_foresight(query_time: datetime = None,
     if query_time is None:
         query_time = datetime.now()
 
-    all_foresight = db.get_active_foresight(query_time)
+    all_foresight = _get_foresight_cached(query_time)
 
     if not query_embedding or not all_foresight:
         return all_foresight

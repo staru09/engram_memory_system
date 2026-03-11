@@ -4,6 +4,11 @@ The profile has two fields:
 1. **explicit_facts**: Verifiable attributes about the user (job, location, diet, relationships, skills, etc.). Include time-varying measurements if relevant (e.g., "weight: 75kg as of March 2026").
 2. **implicit_traits**: Inferred preferences, habits, personality traits, and behavioral patterns.
 
+CRITICAL: Only include facts that are EXPLICITLY stated or directly implied by the input facts.
+- Do NOT infer residence from visiting a place (e.g., "visits place in X" ≠ "lives in X")
+- Do NOT escalate casual mentions into permanent attributes
+- Preserve the action context: "likes visiting X" is different from "lives in X"
+
 If a previous profile exists, UPDATE it:
 - For time-varying facts, use the most recent value
 - Add new facts that weren't there before

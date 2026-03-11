@@ -2,16 +2,45 @@ import json
 from datetime import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
 from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage
 
+_pool = None
+
+
+def _get_pool():
+    global _pool
+    if _pool is None or _pool.closed:
+        _pool = ThreadedConnectionPool(
+            minconn=2, maxconn=10,
+            host=PG_HOST, port=PG_PORT,
+            user=PG_USER, password=PG_PASSWORD,
+            dbname=PG_DB
+        )
+    return _pool
+
 
 def get_connection():
-    return psycopg2.connect(
-        host=PG_HOST, port=PG_PORT,
-        user=PG_USER, password=PG_PASSWORD,
-        dbname=PG_DB
-    )
+    return _get_pool().getconn()
+
+
+def release_connection(conn):
+    try:
+        _get_pool().putconn(conn)
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def close_pool():
+    """Close all connections in the pool. Call on server shutdown."""
+    global _pool
+    if _pool and not _pool.closed:
+        _pool.closeall()
+        _pool = None
 
 
 def init_schema():
@@ -97,7 +126,7 @@ def init_schema():
     """)
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 # ── MemScene CRUD ──
@@ -112,7 +141,7 @@ def insert_memscene(scene: MemScene) -> int:
     scene_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return scene_id
 
 
@@ -131,7 +160,7 @@ def update_memscene_summary(scene_id: int, summary: str, theme_label: str = None
         )
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 # ── MemCell CRUD ──
@@ -146,7 +175,7 @@ def insert_memcell(cell: MemCell) -> int:
     cell_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return cell_id
 
 
@@ -159,7 +188,7 @@ def update_memcell_scene(memcell_id: int, scene_id: int):
     )
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 def get_memcells_by_scene(scene_id: int, query_time=None) -> list[dict]:
@@ -174,7 +203,7 @@ def get_memcells_by_scene(scene_id: int, query_time=None) -> list[dict]:
         cur.execute("SELECT * FROM memcells WHERE scene_id = %s ORDER BY created_at", (scene_id,))
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return rows
 
 
@@ -190,7 +219,7 @@ def insert_atomic_fact(fact: AtomicFact) -> int:
     fact_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return fact_id
 
 
@@ -206,7 +235,7 @@ def deactivate_fact(fact_id: int, superseded_on: str = None):
         cur.execute("UPDATE atomic_facts SET is_active = FALSE WHERE id = %s", (fact_id,))
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 def keyword_search_facts(query: str, top_k: int = 10, query_time=None) -> list[dict]:
@@ -236,7 +265,7 @@ def keyword_search_facts(query: str, top_k: int = 10, query_time=None) -> list[d
         """, (query, query, top_k))
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return rows
 
 
@@ -252,7 +281,7 @@ def insert_foresight(f: Foresight) -> int:
     fid = cur.fetchone()[0]
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return fid
 
 
@@ -270,7 +299,7 @@ def get_active_foresight(query_time) -> list[dict]:
     """, (query_time, query_time, query_time))
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return rows
 
 
@@ -280,7 +309,7 @@ def update_foresight_embedding(foresight_id: int, embedding: list[float]):
     cur.execute("UPDATE foresight SET embedding = %s WHERE id = %s", (embedding, foresight_id))
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 def update_memcell_embedding(memcell_id: int, embedding: list[float]):
@@ -289,7 +318,7 @@ def update_memcell_embedding(memcell_id: int, embedding: list[float]):
     cur.execute("UPDATE memcells SET embedding = %s WHERE id = %s", (embedding, memcell_id))
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 # ── Conflict CRUD ──
@@ -314,7 +343,7 @@ def get_episode_staleness(memcell_ids: list[int]) -> dict[int, float]:
         superseded = row[2]
         result[row[0]] = superseded / total if total > 0 else 0.0
     cur.close()
-    conn.close()
+    release_connection(conn)
     return result
 
 
@@ -331,7 +360,7 @@ def get_superseded_map(fact_ids: list[int]) -> dict[int, int]:
     """, (fact_ids,))
     result = {row[0]: row[1] for row in cur.fetchall()}
     cur.close()
-    conn.close()
+    release_connection(conn)
     return result
 
 
@@ -345,7 +374,7 @@ def insert_conflict(c: Conflict) -> int:
     cid = cur.fetchone()[0]
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return cid
 
 
@@ -368,7 +397,7 @@ def upsert_user_profile(profile: UserProfile):
         )
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 def get_user_profile() -> UserProfile | None:
@@ -377,7 +406,7 @@ def get_user_profile() -> UserProfile | None:
     cur.execute("SELECT * FROM user_profile LIMIT 1")
     row = cur.fetchone()
     cur.close()
-    conn.close()
+    release_connection(conn)
     if not row:
         return None
     return UserProfile(
@@ -394,7 +423,7 @@ def get_memcell_by_id(memcell_id: int) -> dict | None:
     cur.execute("SELECT * FROM memcells WHERE id = %s", (memcell_id,))
     row = cur.fetchone()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return row
 
 
@@ -407,7 +436,7 @@ def get_memcells_by_ids(memcell_ids: list[int]) -> dict[int, dict]:
     cur.execute("SELECT * FROM memcells WHERE id = ANY(%s)", (list(memcell_ids),))
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return {row["id"]: row for row in rows}
 
 
@@ -426,7 +455,7 @@ def get_memcells_by_scenes(scene_ids: list[int], query_time=None) -> list[dict]:
         cur.execute("SELECT * FROM memcells WHERE scene_id = ANY(%s) ORDER BY created_at", (list(scene_ids),))
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return rows
 
 
@@ -436,7 +465,7 @@ def get_fact_by_id(fact_id: int) -> dict | None:
     cur.execute("SELECT * FROM atomic_facts WHERE id = %s", (fact_id,))
     row = cur.fetchone()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return row
 
 
@@ -449,7 +478,7 @@ def get_facts_by_ids(fact_ids: list[int]) -> dict[int, dict]:
     cur.execute("SELECT * FROM atomic_facts WHERE id = ANY(%s)", (list(fact_ids),))
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return {row["id"]: row for row in rows}
 
 
@@ -468,7 +497,7 @@ def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
     """, (fact_ids, query_date, query_date))
     valid = {row[0] for row in cur.fetchall()}
     cur.close()
-    conn.close()
+    release_connection(conn)
     return valid
 
 
@@ -480,7 +509,7 @@ def get_thread(thread_id: str) -> dict | None:
     cur.execute("SELECT * FROM chat_threads WHERE id = %s", (thread_id,))
     row = cur.fetchone()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return row
 
 
@@ -494,7 +523,7 @@ def create_thread(thread_id: str, title: str = None) -> str:
     tid = cur.fetchone()[0]
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return tid
 
 
@@ -506,7 +535,7 @@ def list_threads(limit: int = 20) -> list[dict]:
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return rows
 
 
@@ -523,7 +552,7 @@ def insert_message(thread_id: str, role: str, content: str) -> int:
     )
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return msg_id
 
 
@@ -542,7 +571,7 @@ def get_thread_messages(thread_id: str, limit: int = 50, before_id: int = None) 
         )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return list(reversed(rows))  # chronological order
 
 
@@ -555,7 +584,7 @@ def get_unprocessed_messages(thread_id: str) -> list[dict]:
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_connection(conn)
     return rows
 
 
@@ -570,7 +599,7 @@ def mark_messages_ingested(message_ids: list[int]):
     )
     conn.commit()
     cur.close()
-    conn.close()
+    release_connection(conn)
 
 
 def get_threads_with_old_unprocessed(minutes: int = 10) -> list[str]:
@@ -584,7 +613,7 @@ def get_threads_with_old_unprocessed(minutes: int = 10) -> list[str]:
     """, (minutes,))
     thread_ids = [row[0] for row in cur.fetchall()]
     cur.close()
-    conn.close()
+    release_connection(conn)
     return thread_ids
 
 
@@ -603,7 +632,7 @@ def get_system_stats() -> dict:
     cur.execute("SELECT COUNT(*) FROM atomic_facts")
     total_facts = cur.fetchone()[0]
     cur.close()
-    conn.close()
+    release_connection(conn)
     return {
         "total_memcells": total_memcells,
         "total_scenes": total_scenes,

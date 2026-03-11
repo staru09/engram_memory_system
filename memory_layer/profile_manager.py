@@ -14,7 +14,7 @@ _BATCH_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "conflic
 
 # Facts with similarity above this threshold are checked for contradiction.
 
-CONFLICT_SIMILARITY_THRESHOLD = 0.65
+CONFLICT_SIMILARITY_THRESHOLD = 0.75
 
 
 def _load_prompt():
@@ -98,7 +98,7 @@ def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: l
     seen_fact_ids = {new_fact_id}
 
     # Path 1: Vector similarity
-    similar = vector_store.search_facts(new_fact_embedding, top_k=5)
+    similar = vector_store.search_facts(new_fact_embedding, top_k=3)
     vector_candidates = [
         hit for hit in similar
         if hit["fact_id"] not in seen_fact_ids and hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
@@ -107,7 +107,7 @@ def detect_conflicts(new_fact_id: int, new_fact_text: str, new_fact_embedding: l
         seen_fact_ids.add(hit["fact_id"])
 
     # Path 2: Keyword (full-text) search
-    keyword_hits = db.keyword_search_facts(new_fact_text, top_k=5)
+    keyword_hits = db.keyword_search_facts(new_fact_text, top_k=3)
     keyword_candidates = [
         {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
         for row in keyword_hits
@@ -209,7 +209,7 @@ def _find_candidates_for_fact(fact_id: int, fact_text: str, fact_embedding: list
     seen = {fact_id}
 
     # Vector search
-    similar = vector_store.search_facts(fact_embedding, top_k=5)
+    similar = vector_store.search_facts(fact_embedding, top_k=3)
     vector_cands = [
         hit for hit in similar
         if hit["fact_id"] not in seen and hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
@@ -218,7 +218,7 @@ def _find_candidates_for_fact(fact_id: int, fact_text: str, fact_embedding: list
         seen.add(hit["fact_id"])
 
     # Keyword search
-    keyword_hits = db.keyword_search_facts(fact_text, top_k=5)
+    keyword_hits = db.keyword_search_facts(fact_text, top_k=3)
     keyword_cands = [
         {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
         for row in keyword_hits
@@ -285,7 +285,7 @@ def _find_all_candidates_batched(facts_with_embeddings: list[dict]) -> tuple[lis
         seen = {fact_id}
 
         # Vector search (Qdrant Cloud)
-        similar = vector_store.search_facts(new_fact["embedding"], top_k=5)
+        similar = vector_store.search_facts(new_fact["embedding"], top_k=3)
         vector_cands = [
             hit for hit in similar
             if hit["fact_id"] not in seen and hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
@@ -294,7 +294,7 @@ def _find_all_candidates_batched(facts_with_embeddings: list[dict]) -> tuple[lis
             seen.add(hit["fact_id"])
 
         # Keyword search (Supabase)
-        keyword_hits = db.keyword_search_facts(new_fact["fact_text"], top_k=5)
+        keyword_hits = db.keyword_search_facts(new_fact["fact_text"], top_k=3)
         keyword_cands = [
             {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
             for row in keyword_hits

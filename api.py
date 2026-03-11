@@ -2,7 +2,7 @@ import uuid
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -42,10 +42,21 @@ class CreateThreadRequest(BaseModel):
 
 def build_chat_prompt(memory_context: str, recent_messages: list[dict],
                       query_time: datetime) -> str:
+    IST = timezone(timedelta(hours=5, minutes=30))
     history_lines = []
     for msg in recent_messages:
         role = "User" if msg["role"] == "user" else "Assistant"
-        history_lines.append(f"{role}: {msg['content']}")
+        ts = msg.get("created_at")
+        if hasattr(ts, 'strftime'):
+            # DB stores UTC, convert to IST for display
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            time_str = ts.astimezone(IST).strftime('%H:%M')
+        elif ts:
+            time_str = str(ts)
+        else:
+            time_str = ""
+        history_lines.append(f"[{time_str}] {role}: {msg['content']}")
     history_block = "\n".join(history_lines)
 
     return f"""You are "Ira", a close friend and AI companion who chats casually in Hinglish (Hindi words written in English script). You have long-term memory of past conversations.
@@ -102,6 +113,8 @@ def run_background_ingestion(thread_id: str, messages: list[dict]):
 
         message_ids = [msg["id"] for msg in messages]
         db.mark_messages_ingested(message_ids)
+        from agentic_layer.retrieval_utils import invalidate_foresight_cache
+        invalidate_foresight_cache()
         print(f"[Background] Ingested {len(messages)} messages from thread {thread_id}")
     except Exception as e:
         print(f"[Background] Ingestion failed for thread {thread_id}: {e}")
@@ -160,6 +173,8 @@ async def lifespan(app: FastAPI):
     # Start periodic ingestion checker
     threading.Thread(target=periodic_ingestion_check, daemon=True).start()
     yield
+    # Cleanup: close connection pool on shutdown
+    db.close_pool()
 
 
 # ── FastAPI App ──
