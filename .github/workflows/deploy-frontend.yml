@@ -2,7 +2,7 @@ name: Deploy Frontend to GitHub Pages
 
 on:
   push:
-    branches: [deployment]
+    branches: [deployment, refactor_deployment]
 
 permissions:
   contents: read
