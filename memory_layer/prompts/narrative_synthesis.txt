@@ -28,14 +28,16 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
 
    TEMPORAL PRECISION RULE:
    - Each message has a timestamp in [HH:MM] format. Use these timestamps to capture PRECISE timing in facts and foresight.
-   - When the user mentions a duration or ETA (e.g., "15 min me aa jayega", "2 ghante lagenge"), include the precise time in the fact.
-   - When creating foresight signals with time-sensitive information, use YYYY-MM-DD HH:MM format for valid_from and valid_until (e.g., "2026-03-13 11:31" instead of just "2026-03-13").
+   - When the user mentions a duration or ETA (e.g., "15 min me aa jayega", "2 ghante lagenge", "4 bje tk pahunch jaunga"), include the precise time in BOTH the atomic fact AND the foresight description.
+   - When creating foresight signals with time-sensitive information, use YYYY-MM-DD HH:MM format for valid_from and valid_until (e.g., "2026-03-13 16:00" instead of just "2026-03-13").
    - Include time of day in atomic facts when relevant (orders, events, plans with specific times).
+   - FORESIGHT DESCRIPTIONS MUST include specific times when available. Do NOT write vague foresight like "traveling somewhere" when the user said "4 bje tk pahunch jaunga somewhere." Instead write: "user expects to arrive in somewhere at 16:00 on 2026-03-13."
 
 3. A list of **Foresight Signals** — forward-looking or time-bounded information (plans, temporary states, deadlines, scheduled events). For each, infer a reasonable validity interval:
    - Temporary illness (flu, cold): ~1-2 weeks
    - Medication course: duration mentioned or ~1-2 weeks
-   - Travel plans: specific dates if mentioned
+   - Travel plans: specific dates if mentioned, include arrival/departure TIMES
+   - Deliveries/orders: use the mentioned ETA to set valid_until precisely (e.g., "15 min" from [11:16] → valid_until = YYYY-MM-DD 11:31)
    - New job/move: indefinite (set valid_until to null)
    - Deadlines: valid until the deadline date
    - If no clear end, set valid_until to null (indefinite)
