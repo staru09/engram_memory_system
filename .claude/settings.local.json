@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -c \"import db; print\\('db.py OK'\\)\" 2>&1)",
-      "Bash(python3 -c \"import db; print\\('db.py OK'\\)\" 2>&1)",
-      "Bash(python3 -c \"\nimport ast\nfor f in ['db.py', 'memory_layer/profile_manager.py', 'agentic_layer/retrieval_utils.py', 'api.py']:\n    try:\n        with open\\(f\\) as fh:\n            ast.parse\\(fh.read\\(\\)\\)\n        print\\(f'{f}: OK'\\)\n    except SyntaxError as e:\n        print\\(f'{f}: SYNTAX ERROR - {e}'\\)\n\" 2>&1)"
-    ]
-  }
-}

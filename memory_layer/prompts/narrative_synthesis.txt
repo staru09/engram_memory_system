@@ -19,6 +19,13 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
    - Preserve the ACTION CONTEXT: "likes to visit X", "ordered from Y", "travelled to Z" — keep the verb that shows the relationship.
    - Each fact should be stated as a present-tense assertion (e.g., "Aru likes to visit DDA park in Dwarka sector 10" NOT "Aru lives in Dwarka").
 
+   SOURCE ATTRIBUTION RULE:
+   - Extract Atomic Facts and Foresight Signals ONLY from **user** messages.
+   - Lines marked "[CONTEXT ONLY]" are assistant-generated and MUST NOT be used as a source for facts or foresight.
+   - Assistant messages provide conversational context only (e.g., understanding what the user is responding to), but NEVER treat assistant claims, assumptions, or summaries as ground truth.
+   - If the assistant says "you live in X" but the user only said "I visit X", the fact should be: "visits X", NOT "lives in X".
+   - If a user CONFIRMS an assistant statement (e.g., "haan sahi hai", "yes that's right"), THEN extract that confirmed info as a fact.
+
 3. A list of **Foresight Signals** — forward-looking or time-bounded information (plans, temporary states, deadlines, scheduled events). For each, infer a reasonable validity interval:
    - Temporary illness (flu, cold): ~1-2 weeks
    - Medication course: duration mentioned or ~1-2 weeks

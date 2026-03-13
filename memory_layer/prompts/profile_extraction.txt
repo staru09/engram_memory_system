@@ -5,6 +5,7 @@ The profile has two fields:
 2. **implicit_traits**: Inferred preferences, habits, personality traits, and behavioral patterns.
 
 CRITICAL: Only include facts that are EXPLICITLY stated or directly implied by the input facts.
+- These facts were extracted from user messages. Do not infer or add information not present in the input facts.
 - Do NOT infer residence from visiting a place (e.g., "visits place in X" ≠ "lives in X")
 - Do NOT escalate casual mentions into permanent attributes
 - Preserve the action context: "likes visiting X" is different from "lives in X"

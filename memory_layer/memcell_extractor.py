@@ -55,7 +55,9 @@ def extract_segments(conversation: list[dict]) -> list[dict]:
         end = seg["end_turn"]
         turns = conversation[start:end + 1]
         dialogue = "\n".join(
-            f"{t['role']}: {t['content']}" for t in turns
+            f"{t['role']}: {t['content']}" if t['role'] == 'user'
+            else f"{t['role']} [CONTEXT ONLY]: {t['content']}"
+            for t in turns
         )
         results.append({
             "segment_id": seg["segment_id"],
