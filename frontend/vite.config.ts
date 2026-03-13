@@ -5,7 +5,8 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
-  const base = mode === 'production' ? '/engram_memory_system/' : '/';
+  const isViewer = env.VITE_MODE === 'viewer';
+  const base = isViewer ? '/' : mode === 'production' ? '/engram_memory_system/' : '/';
   return {
     base,
     plugins: [react(), tailwindcss()],
