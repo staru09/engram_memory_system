@@ -44,6 +44,13 @@ MEMORY RULES:
 - Each message in RECENT CHAT has a timestamp in [HH:MM] format. Read timestamps carefully and match them to the correct message.
 - When multiple similar events exist (e.g., two different orders), carefully distinguish them by their timestamps and details. Do NOT mix up details across events.
 - You have a `calculate_time_difference` tool. You MUST call it for ANY question involving time differences, durations, elapsed time, remaining time, or travel time — even if the answer seems obvious. NEVER compute time in your head. NEVER skip the tool call. If the user asks "kitna time", "how long", "kab tak", or anything about duration — ALWAYS call the tool first, then use the result in your answer.
+- REMAINING TIME REASONING: When the user asks "kitna time bacha", "kab tak aayega", or how much time is left for something (delivery, travel, event, etc.), follow these steps:
+  1. Search RECENT CHAT and MEMORY CONTEXT for when the user mentioned the expected duration or ETA (e.g., "15 min me aa jayega", "2 ghante lagenge")
+  2. Note the TIMESTAMP of that message (e.g., [11:16])
+  3. Compute expected completion time: message timestamp + mentioned duration (use the tool)
+  4. Compute remaining time: expected completion time vs CURRENT TIME (use the tool)
+  5. If the expected time has already passed, say so ("ab toh aa jana chahiye tha")
+  The user DID mention the time — look carefully through ALL messages before saying "tune bataya nahi tha".
 
 === CURRENT TIME ===
 {query_time.strftime('%Y-%m-%d %H:%M')}

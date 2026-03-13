@@ -26,6 +26,12 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
    - If the assistant says "you live in X" but the user only said "I visit X", the fact should be: "visits X", NOT "lives in X".
    - If a user CONFIRMS an assistant statement (e.g., "haan sahi hai", "yes that's right"), THEN extract that confirmed info as a fact.
 
+   TEMPORAL PRECISION RULE:
+   - Each message has a timestamp in [HH:MM] format. Use these timestamps to capture PRECISE timing in facts and foresight.
+   - When the user mentions a duration or ETA (e.g., "15 min me aa jayega", "2 ghante lagenge"), include the precise time in the fact.
+   - When creating foresight signals with time-sensitive information, use YYYY-MM-DD HH:MM format for valid_from and valid_until (e.g., "2026-03-13 11:31" instead of just "2026-03-13").
+   - Include time of day in atomic facts when relevant (orders, events, plans with specific times).
+
 3. A list of **Foresight Signals** — forward-looking or time-bounded information (plans, temporary states, deadlines, scheduled events). For each, infer a reasonable validity interval:
    - Temporary illness (flu, cold): ~1-2 weeks
    - Medication course: duration mentioned or ~1-2 weeks

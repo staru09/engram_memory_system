@@ -17,7 +17,7 @@ def run_background_ingestion(thread_id: str, messages: list[dict]):
     """Convert chat messages to conversation format and run existing pipeline."""
     try:
         conversation = [
-            {"role": msg["role"], "content": msg["content"]}
+            {"role": msg["role"], "content": msg["content"], "created_at": msg.get("created_at")}
             for msg in messages
         ]
         current_date = messages[-1]["created_at"].strftime("%Y-%m-%d")

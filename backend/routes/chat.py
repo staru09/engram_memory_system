@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -12,6 +12,8 @@ from backend.schemas import ChatRequest
 from backend.gemini import gemini_client, call_gemini_with_tools
 from backend.prompt import build_chat_prompt
 from backend.ingestion import check_ingestion_trigger
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 router = APIRouter()
 
@@ -26,24 +28,25 @@ def chat(request: ChatRequest):
     db.insert_message(request.thread_id, "user", request.message)
 
     # 2. Get unindexed messages as short-term memory
-    query_time = datetime.now()
+    query_time_utc = datetime.now(timezone.utc)
+    query_time_ist = query_time_utc.astimezone(IST)
     recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Retrieve memory context (long-term memory)
+    # 3. Retrieve memory context (long-term memory) — use UTC for DB comparisons
     memory_context = ""
     try:
         stats = db.get_system_stats()
         if stats["active_facts"] > 0:
-            result = retrieve(request.message, query_time)
+            result = retrieve(request.message, query_time_utc.replace(tzinfo=None))
             memory_context = compose_context(result)
     except Exception as e:
         print(f"[Chat] Memory retrieval failed: {e}")
 
-    # 4. Build prompt
+    # 4. Build prompt — use IST for display
     prompt = build_chat_prompt(
         memory_context=memory_context,
         recent_messages=recent_messages,
-        query_time=query_time,
+        query_time=query_time_ist,
     )
 
     # 5. Call Gemini with time calculator tool
@@ -68,23 +71,24 @@ async def chat_stream(request: ChatRequest):
     db.insert_message(request.thread_id, "user", request.message)
 
     # 2. Get unindexed messages as short-term memory
-    query_time = datetime.now()
+    query_time_utc = datetime.now(timezone.utc)
+    query_time_ist = query_time_utc.astimezone(IST)
     recent_messages = db.get_unprocessed_messages(request.thread_id)
 
     memory_context = ""
     try:
         stats = db.get_system_stats()
         if stats["active_facts"] > 0:
-            result = retrieve(request.message, query_time)
+            result = retrieve(request.message, query_time_utc.replace(tzinfo=None))
             memory_context = compose_context(result)
     except Exception as e:
         print(f"[Chat Stream] Memory retrieval failed: {e}")
 
-    # 3. Build prompt
+    # 3. Build prompt — use IST for display
     prompt = build_chat_prompt(
         memory_context=memory_context,
         recent_messages=recent_messages,
-        query_time=query_time,
+        query_time=query_time_ist,
     )
 
     # 4. Stream from Gemini

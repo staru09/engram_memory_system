@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import timezone, timedelta
 from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
 
@@ -54,11 +55,20 @@ def extract_segments(conversation: list[dict]) -> list[dict]:
         start = seg["start_turn"]
         end = seg["end_turn"]
         turns = conversation[start:end + 1]
-        dialogue = "\n".join(
-            f"{t['role']}: {t['content']}" if t['role'] == 'user'
-            else f"{t['role']} [CONTEXT ONLY]: {t['content']}"
-            for t in turns
-        )
+        def _format_turn(t):
+            IST = timezone(timedelta(hours=5, minutes=30))
+            ts = t.get("created_at")
+            time_prefix = ""
+            if ts and hasattr(ts, 'strftime'):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                time_prefix = f"[{ts.astimezone(IST).strftime('%H:%M')}] "
+            if t['role'] == 'user':
+                return f"{time_prefix}{t['role']}: {t['content']}"
+            else:
+                return f"{time_prefix}{t['role']} [CONTEXT ONLY]: {t['content']}"
+
+        dialogue = "\n".join(_format_turn(t) for t in turns)
         results.append({
             "segment_id": seg["segment_id"],
             "topic_hint": seg["topic_hint"],

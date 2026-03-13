@@ -2,7 +2,7 @@ import json
 import sys
 import time
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from google import genai
 
@@ -91,13 +91,24 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
         for i, fs in enumerate(foresight_signals):
             valid_from = None
             valid_until = None
+            def _parse_foresight_dt(val):
+                """Parse foresight datetime from LLM output (IST) and convert to UTC for storage."""
+                if not val or val == "null" or val == "None":
+                    return None
+                IST = timezone(timedelta(hours=5, minutes=30))
+                for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                    try:
+                        dt = datetime.strptime(str(val).strip(), fmt)
+                        # LLM outputs IST (dialogue timestamps are IST) — convert to UTC for DB
+                        dt_ist = dt.replace(tzinfo=IST)
+                        return dt_ist.astimezone(timezone.utc).replace(tzinfo=None)
+                    except ValueError:
+                        continue
+                return None
+
             try:
-                vf = fs.get("valid_from")
-                if vf and vf != "null" and vf != "None":
-                    valid_from = datetime.strptime(str(vf).strip(), "%Y-%m-%d")
-                vu = fs.get("valid_until")
-                if vu and vu != "null" and vu != "None":
-                    valid_until = datetime.strptime(str(vu).strip(), "%Y-%m-%d")
+                valid_from = _parse_foresight_dt(fs.get("valid_from"))
+                valid_until = _parse_foresight_dt(fs.get("valid_until"))
             except (ValueError, TypeError) as e:
                 print(f"       Warning: Could not parse foresight dates: {e}")
 
