@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from config import RETRIEVAL_TOP_K, SCENE_TOP_N
 import db
 from agentic_layer.retrieval_utils import (
@@ -166,7 +166,7 @@ def retrieve(query: str, query_time: datetime = None,
         }
     """
     if query_time is None:
-        query_time = datetime.now()
+        query_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
     retrieval_start = time.time()
 

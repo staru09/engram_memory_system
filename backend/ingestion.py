@@ -1,8 +1,11 @@
 import threading
 import time
+from datetime import timezone, timedelta
 
 import db
 from main import ingest_conversation
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 INGESTION_MESSAGE_THRESHOLD = 20
@@ -20,7 +23,11 @@ def run_background_ingestion(thread_id: str, messages: list[dict]):
             {"role": msg["role"], "content": msg["content"], "created_at": msg.get("created_at")}
             for msg in messages
         ]
-        current_date = messages[-1]["created_at"].strftime("%Y-%m-%d")
+        # Convert UTC timestamp to IST before extracting date — ensures "kal"/"aaj" resolve correctly
+        last_ts = messages[-1]["created_at"]
+        if hasattr(last_ts, 'tzinfo') and last_ts.tzinfo is None:
+            last_ts = last_ts.replace(tzinfo=timezone.utc)
+        current_date = last_ts.astimezone(IST).strftime("%Y-%m-%d")
         source_id = f"thread_{thread_id}_{current_date}"
 
         ingest_conversation(conversation, source_id=source_id, current_date=current_date)

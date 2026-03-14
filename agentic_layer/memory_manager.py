@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
 from agentic_layer.fetch_mem_service import retrieve, compose_context
@@ -103,7 +103,7 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
         }
     """
     if query_time is None:
-        query_time = datetime.now()
+        query_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # Round 1: initial retrieval
     if verbose:

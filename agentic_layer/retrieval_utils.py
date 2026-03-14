@@ -1,7 +1,7 @@
 import math
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from config import RRF_K, RETRIEVAL_TOP_K, RRF_KEYWORD_WEIGHT, RRF_VECTOR_WEIGHT, FACT_DEDUP_THRESHOLD
 import db
 import vector_store
@@ -171,7 +171,7 @@ def filter_active_foresight(query_time: datetime = None,
     are collapsed to the highest-scoring entry.
     """
     if query_time is None:
-        query_time = datetime.now()
+        query_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
     all_foresight = _get_foresight_cached(query_time)
 

@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
 
@@ -23,7 +23,8 @@ def extract_episode(segment_dialogue: str, current_date: str = None) -> dict:
         {"episode": str, "atomic_facts": list[str], "foresight": list[dict], "scene_hint": dict}
     """
     if current_date is None:
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        IST = timezone(timedelta(hours=5, minutes=30))
+        current_date = datetime.now(timezone.utc).astimezone(IST).strftime("%Y-%m-%d")
 
     prompt = _load_prompt().replace("{segment}", segment_dialogue).replace("{current_date}", current_date)
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)

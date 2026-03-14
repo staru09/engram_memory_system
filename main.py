@@ -193,7 +193,8 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
                         current_date: str = None, interactive: bool = False):
     """Async ingestion pipeline: parallel extraction, batch embedding, two-phase storage."""
     if current_date is None:
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        IST = timezone(timedelta(hours=5, minutes=30))
+        current_date = datetime.now(timezone.utc).astimezone(IST).strftime("%Y-%m-%d")
 
     print(f"[1/2] Segmenting conversation ({len(conversation)} turns)...")
     segments = extract_segments(conversation)
