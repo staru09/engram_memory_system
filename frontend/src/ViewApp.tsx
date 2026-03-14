@@ -75,10 +75,18 @@ export default function ViewApp() {
         const { messages: latest } = await supabaseApi.getMessages(selectedThread);
         const formatted = formatMessages(latest);
         setMessages(prev => {
-          if (formatted.length !== prev.length || (formatted.length > 0 && formatted[formatted.length - 1].id !== prev[prev.length - 1]?.id)) {
-            return formatted;
-          }
-          return prev;
+          if (prev.length === 0) return formatted;
+          // Find the last message ID we already have
+          const lastExistingId = prev[prev.length - 1]?.id;
+          const lastFetchedId = formatted[formatted.length - 1]?.id;
+          // No new messages
+          if (lastExistingId === lastFetchedId) return prev;
+          // Append only new messages (messages after our last known ID)
+          const newMessages = formatted.filter(
+            msg => !prev.some(existing => existing.id === msg.id)
+          );
+          if (newMessages.length === 0) return prev;
+          return [...prev, ...newMessages];
         });
       } catch {
         // silently ignore poll errors
@@ -117,7 +125,7 @@ export default function ViewApp() {
       <header className="flex items-center justify-between px-4 py-2 bg-[#f0f2f5] border-b border-gray-300 z-10">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden">
-            <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Ira" alt="Ira" className="w-full h-full object-cover" />
+            <img src="/icon.jpg" alt="Ira" className="w-full h-full object-cover" />
           </div>
           <div>
             <h1 className="text-[#111b21] font-medium text-base">Ira</h1>
