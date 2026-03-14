@@ -125,10 +125,10 @@ export default function ViewApp() {
       <header className="flex items-center justify-between px-4 py-2 bg-[#f0f2f5] border-b border-gray-300 z-10">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gray-300 overflow-hidden">
-            <img src="/icon.jpg" alt="Ira" className="w-full h-full object-cover" />
+            <img src="/icon.jpg" alt="yo-bot" className="w-full h-full object-cover" />
           </div>
           <div>
-            <h1 className="text-[#111b21] font-medium text-base">Ira</h1>
+            <h1 className="text-[#111b21] font-medium text-base">yo-bot</h1>
             <span className="text-[#667781] text-xs flex items-center gap-1">
               <Eye size={12} /> View Only
             </span>
