@@ -10,7 +10,7 @@ from agentic_layer.vectorize_service import embed_text
 
 EPISODE_SIM_THRESHOLD = 0.3
 EPISODE_MIN_KEEP = 3
-EPISODE_STALENESS_THRESHOLD = 0.5  # drop episodes where >50% of facts are superseded
+EPISODE_STALENESS_THRESHOLD = 0.5
 
 
 def _score_scenes(facts: list[dict]) -> list[dict]:

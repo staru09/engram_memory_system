@@ -1,5 +1,5 @@
-import math
 import time as _time
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timezone
 from config import RRF_K, RETRIEVAL_TOP_K, RRF_KEYWORD_WEIGHT, RRF_VECTOR_WEIGHT, FACT_DEDUP_THRESHOLD
@@ -9,7 +9,7 @@ from agentic_layer.vectorize_service import embed_text
 
 
 FORESIGHT_MAX_RESULTS = 5
-FORESIGHT_CACHE_TTL = 60  # seconds
+FORESIGHT_CACHE_TTL = 60 
 
 _foresight_cache = {"data": None, "ts": 0}
 
@@ -32,15 +32,14 @@ def invalidate_foresight_cache():
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two embedding vectors (pure Python)."""
+    """Cosine similarity between two embedding vectors."""
     if not a or not b:
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
+    a_arr, b_arr = np.array(a), np.array(b)
+    norm = np.linalg.norm(a_arr) * np.linalg.norm(b_arr)
+    if norm == 0:
         return 0.0
-    return dot / (norm_a * norm_b)
+    return float(np.dot(a_arr, b_arr) / norm)
 
 
 def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None) -> list[dict]:
