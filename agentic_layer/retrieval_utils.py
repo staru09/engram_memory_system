@@ -14,12 +14,12 @@ FORESIGHT_CACHE_TTL = 60
 _foresight_cache = {"data": None, "ts": 0}
 
 
-def _get_foresight_cached(query_time) -> list[dict]:
+def _get_foresight_cached(query_time_utc, query_time_ist=None) -> list[dict]:
     """Return foresight with in-memory caching (60s TTL)."""
     now = _time.time()
     if _foresight_cache["data"] is not None and now - _foresight_cache["ts"] < FORESIGHT_CACHE_TTL:
         return _foresight_cache["data"]
-    data = db.get_active_foresight(query_time)
+    data = db.get_active_foresight(query_time_utc, query_time_ist=query_time_ist)
     _foresight_cache["data"] = data
     _foresight_cache["ts"] = now
     return data
@@ -163,20 +163,22 @@ def deduplicate_facts(facts: list[dict], threshold: float = FACT_DEDUP_THRESHOLD
     return selected
 
 
-def filter_active_foresight(query_time: datetime = None,
-                            query_embedding: list[float] = None) -> list[dict]:
+def filter_active_foresight(query_time_utc: datetime = None,
+                            query_embedding: list[float] = None,
+                            query_time_ist: datetime = None) -> list[dict]:
     """
     Return foresight signals valid at query_time, ranked by semantic similarity
     to the query and deduplicated.
 
-    Uses cosine similarity between query embedding and foresight embeddings
-    (stored at ingestion time). Near-duplicate foresight (pairwise cosine > 0.9)
-    are collapsed to the highest-scoring entry.
+    Args:
+        query_time_utc: UTC datetime for valid_from/valid_until comparisons
+        query_time_ist: IST datetime for conversation_date comparison
+        query_embedding: Pre-computed query embedding for relevance scoring
     """
-    if query_time is None:
-        query_time = datetime.now(timezone.utc).replace(tzinfo=None)
+    if query_time_utc is None:
+        query_time_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    all_foresight = _get_foresight_cached(query_time)
+    all_foresight = _get_foresight_cached(query_time_utc, query_time_ist=query_time_ist)
 
     if not query_embedding or not all_foresight:
         return all_foresight

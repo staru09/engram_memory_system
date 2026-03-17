@@ -312,8 +312,14 @@ def insert_foresight(f: Foresight) -> int:
     return fid
 
 
-def get_active_foresight(query_time) -> list[dict]:
-    """Return foresight valid at the given time, with embeddings and source conversation date."""
+def get_active_foresight(query_time_utc, query_time_ist=None) -> list[dict]:
+    """Return foresight valid at the given time, with embeddings and source conversation date.
+
+    Args:
+        query_time_utc: UTC datetime for valid_from/valid_until comparisons
+        query_time_ist: IST datetime for conversation_date comparison (falls back to query_time_utc)
+    """
+    source_date_filter = query_time_ist if query_time_ist is not None else query_time_utc
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
@@ -323,7 +329,7 @@ def get_active_foresight(query_time) -> list[dict]:
           AND f.valid_from <= %s
           AND (f.valid_until IS NULL OR f.valid_until >= %s)
         ORDER BY m.conversation_date DESC
-    """, (query_time, query_time, query_time))
+    """, (source_date_filter, query_time_utc, query_time_utc))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)
