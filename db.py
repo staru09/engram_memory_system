@@ -238,11 +238,27 @@ def deactivate_fact(fact_id: int, superseded_on: str = None):
     release_connection(conn)
 
 
-def keyword_search_facts(query: str, top_k: int = 10, query_time=None) -> list[dict]:
-    """Full-text search on atomic_facts using ts_rank."""
+def keyword_search_facts(query: str, top_k: int = 10, query_time=None,
+                         date_filter: dict = None) -> list[dict]:
+    """Full-text search on atomic_facts using ts_rank.
+
+    Args:
+        date_filter: Optional {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}
+    """
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    if query_time:
+    if date_filter:
+        cur.execute("""
+            SELECT id, memcell_id, fact_text, conversation_date,
+                   ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
+            FROM atomic_facts
+            WHERE conversation_date BETWEEN %s AND %s
+              AND is_active = TRUE
+              AND fact_tsv @@ plainto_tsquery('english', %s)
+            ORDER BY rank DESC
+            LIMIT %s
+        """, (query, date_filter["date_from"], date_filter["date_to"], query, top_k))
+    elif query_time:
         cur.execute("""
             SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank

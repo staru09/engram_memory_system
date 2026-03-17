@@ -42,20 +42,22 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return float(np.dot(a_arr, b_arr) / norm)
 
 
-def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None) -> list[dict]:
+def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None,
+                    date_filter: dict = None) -> list[dict]:
     """
     PostgreSQL full-text search on atomic_facts using ts_rank.
     Returns list of {fact_id, memcell_id, fact_text, conversation_date, rank}.
     """
-    return db.keyword_search_facts(query, top_k, query_time=query_time)
+    return db.keyword_search_facts(query, top_k, query_time=query_time, date_filter=date_filter)
 
 
-def vector_search(query_embedding: list[float], top_k: int = RETRIEVAL_TOP_K) -> list[dict]:
+def vector_search(query_embedding: list[float], top_k: int = RETRIEVAL_TOP_K,
+                   date_filter: dict = None) -> list[dict]:
     """
     Qdrant cosine similarity search using a pre-computed query embedding.
     Returns list of {fact_id, memcell_id, score}.
     """
-    return vector_store.search_facts(query_embedding, top_k)
+    return vector_store.search_facts(query_embedding, top_k, date_filter=date_filter)
 
 
 def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
@@ -101,18 +103,20 @@ def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
 
 
 def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K,
-                  query_time=None, query_embedding=None) -> list[dict]:
+                  query_time=None, query_embedding=None,
+                  date_filter: dict = None) -> list[dict]:
     """
     Run both keyword + vector search and fuse via RRF.
     Accepts optional pre-computed query_embedding to avoid redundant embed calls.
+    Optional date_filter {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"} for temporal queries.
     """
     if query_embedding is None:
         query_embedding = embed_text(query)
 
     # Run keyword + vector search in parallel
     with ThreadPoolExecutor(max_workers=2) as executor:
-        kw_future = executor.submit(keyword_search, query, top_k, query_time)
-        vec_future = executor.submit(vector_search, query_embedding, top_k)
+        kw_future = executor.submit(keyword_search, query, top_k, query_time, date_filter)
+        vec_future = executor.submit(vector_search, query_embedding, top_k, date_filter)
         kw_results = kw_future.result()
         vec_results = vec_future.result()
 
