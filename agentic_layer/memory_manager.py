@@ -1,10 +1,11 @@
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
 from agentic_layer.fetch_mem_service import retrieve, compose_context
 from agentic_layer.retrieval_utils import hybrid_search
+from agentic_layer.temporal_parser import parse_temporal_query
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -23,10 +24,14 @@ def _load_prompt(path):
         return f.read()
 
 
-def _check_sufficiency(query: str, context: str) -> dict:
+def _check_sufficiency(query: str, context: str, temporal_info: str = None) -> dict:
     """Ask Gemini if the retrieved context is sufficient to answer the query."""
     prompt_template = _load_prompt(_SUFFICIENCY_PROMPT_PATH)
-    prompt = prompt_template.replace("{query}", query).replace("{context}", context)
+    temporal_context = temporal_info or "No temporal expression detected. The query is about the present."
+    prompt = (prompt_template
+              .replace("{query}", query)
+              .replace("{context}", context)
+              .replace("{temporal_context}", temporal_context))
 
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
     text = response.text.strip()
@@ -105,6 +110,21 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
     if query_time is None:
         query_time = datetime.now(timezone.utc).replace(tzinfo=None)
 
+    # Resolve temporal expression once — reused by sufficiency check
+    IST = timezone(timedelta(hours=5, minutes=30))
+    current_ist = datetime.now(timezone.utc).astimezone(IST)
+    temporal_result = parse_temporal_query(query, current_ist)
+    temporal_info = None
+    if temporal_result:
+        temporal_info = (
+            f"The temporal expression in the query has been resolved: "
+            f"date range = {temporal_result['date_from']} to {temporal_result['date_to']}. "
+            f"Today's date (IST) is {current_ist.strftime('%Y-%m-%d')}. "
+            f"The retrieved context has already been filtered to this date range. "
+            f"Do NOT re-interpret relative time expressions like 'kal', '3 din pehle' etc. "
+            f"— they have already been resolved. Focus only on whether the facts answer the query."
+        )
+
     # Round 1: initial retrieval
     if verbose:
         print(f"\n[Retrieval Round 1] Query: '{query}'")
@@ -128,7 +148,7 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
         }
 
     # Sufficiency check
-    sufficiency = _check_sufficiency(query, context)
+    sufficiency = _check_sufficiency(query, context, temporal_info)
     is_sufficient = sufficiency.get("is_sufficient", False)
 
     if verbose:
@@ -163,7 +183,7 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
 
         # Recompose context and check sufficiency again
         context = compose_context(result)
-        sufficiency = _check_sufficiency(query, context)
+        sufficiency = _check_sufficiency(query, context, temporal_info)
         is_sufficient = sufficiency.get("is_sufficient", False)
 
         if verbose:

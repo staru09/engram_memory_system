@@ -3,6 +3,9 @@ You are an expert in information retrieval evaluation. Assess whether the retrie
 User Query:
 {query}
 
+Temporal Context:
+{temporal_context}
+
 Retrieved Context:
 {context}
 
