@@ -1,7 +1,11 @@
 import React from 'react';
 import { Search } from 'lucide-react';
 
-export default function Header() {
+interface HeaderProps {
+  onSearchClick?: () => void;
+}
+
+export default function Header({ onSearchClick }: HeaderProps) {
   return (
     <header className="flex items-center justify-between px-4 py-2 bg-[#f0f2f5] border-b border-gray-300 z-10">
       <div className="flex items-center gap-3">
@@ -11,7 +15,7 @@ export default function Header() {
         <h1 className="text-[#111b21] font-medium text-base">Ira</h1>
       </div>
       <div className="flex items-center gap-4 text-[#54656f]">
-        <button className="p-2 hover:bg-gray-200 rounded-full transition-colors">
+        <button onClick={onSearchClick} className="p-2 hover:bg-gray-200 rounded-full transition-colors" title="Query Memory">
           <Search size={20} />
         </button>
       </div>

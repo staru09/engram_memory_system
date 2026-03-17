@@ -4,6 +4,7 @@ import { Message } from './types';
 import Header from './components/Header';
 import ChatArea from './components/ChatArea';
 import MessageInput from './components/MessageInput';
+import QueryModal from './components/QueryModal';
 
 const THREAD_ID_KEY = 'engram_thread_id';
 
@@ -21,6 +22,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isQueryModalOpen, setIsQueryModalOpen] = useState(false);
   const threadIdRef = useRef<string | null>(null);
 
   const formatMessages = (history: { id?: number; role: string; content: string; created_at?: string }[]) =>
@@ -152,13 +154,18 @@ export default function App() {
 
   return (
     <div className="font-sans flex flex-col w-full h-[100dvh] overflow-hidden bg-[#efeae2] relative">
-      <Header />
+      <Header onSearchClick={() => setIsQueryModalOpen(true)} />
       <ChatArea messages={messages} isLoading={isLoading} hasMore={hasMore} isLoadingMore={isLoadingMore} onLoadMore={loadOlderMessages} />
-      <MessageInput 
-          inputText={inputText} 
-          setInputText={setInputText} 
-          handleSendMessage={handleSendMessage} 
+      <MessageInput
+          inputText={inputText}
+          setInputText={setInputText}
+          handleSendMessage={handleSendMessage}
         />
+      <QueryModal
+        isOpen={isQueryModalOpen}
+        onClose={() => setIsQueryModalOpen(false)}
+        threadId={threadIdRef.current || undefined}
+      />
     </div>
   );
 }

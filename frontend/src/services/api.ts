@@ -47,5 +47,64 @@ export const api = {
     });
     if (!response.ok) throw new Error('Failed to send message');
     return response.json();
+  },
+
+  async queryMemory(query: string, threadId?: string): Promise<QueryResponse> {
+    const response = await fetch(`${API_BASE_URL}/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, thread_id: threadId || null }),
+    });
+    if (!response.ok) throw new Error('Query failed');
+    return response.json();
   }
 };
+
+export interface QueryMetadata {
+  facts: Array<{
+    fact_id: number;
+    fact_text: string;
+    rrf_score: number;
+    conversation_date: string | null;
+    memcell_id: number;
+  }>;
+  episodes: Array<{
+    memcell_id: number;
+    episode_text: string;
+    relevance_score: number;
+    semantic_sim: number | null;
+    staleness: number | null;
+    conversation_date: string | null;
+    scene_id: number;
+  }>;
+  foresight: Array<{
+    id: number;
+    description: string;
+    valid_from: string | null;
+    valid_until: string | null;
+    source_date: string | null;
+    query_sim: number | null;
+  }>;
+  scenes: Array<{
+    scene_id: number;
+    best_score: number;
+    fact_ids: number[];
+  }>;
+  profile_included: boolean;
+  sufficiency: {
+    is_sufficient: boolean;
+    rounds: number;
+    reasoning: string;
+    missing_information: string[];
+  };
+  timing: {
+    total_retrieval_s: number;
+    llm_response_s: number;
+  };
+}
+
+export interface QueryResponse {
+  response: string;
+  metadata: QueryMetadata;
+  query_time: string;
+}
