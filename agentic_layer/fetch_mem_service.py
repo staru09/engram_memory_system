@@ -1,11 +1,12 @@
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from config import RETRIEVAL_TOP_K, SCENE_TOP_N
 import db
 from agentic_layer.retrieval_utils import (
     hybrid_search, filter_active_foresight, cosine_similarity, deduplicate_facts,
 )
 from agentic_layer.vectorize_service import embed_text
+from agentic_layer.temporal_parser import parse_temporal_query
 
 
 EPISODE_SIM_THRESHOLD = 0.3
@@ -150,6 +151,16 @@ def _filter_stale_episodes(episodes: list[dict], min_keep: int = EPISODE_MIN_KEE
     return fresh + stale[:needed]
 
 
+def _merge_fact_results(list_a: list[dict], list_b: list[dict]) -> list[dict]:
+    """Merge two fact lists, deduplicating by fact_id, keeping higher rrf_score."""
+    seen = {}
+    for f in list_a + list_b:
+        fid = f["fact_id"]
+        if fid not in seen or f["rrf_score"] > seen[fid]["rrf_score"]:
+            seen[fid] = f
+    return sorted(seen.values(), key=lambda x: x["rrf_score"], reverse=True)
+
+
 def retrieve(query: str, query_time: datetime = None,
              top_k_facts: int = RETRIEVAL_TOP_K,
              top_n_scenes: int = SCENE_TOP_N) -> dict:
@@ -170,15 +181,56 @@ def retrieve(query: str, query_time: datetime = None,
 
     retrieval_start = time.time()
 
-    # Compute query embedding once — reused by vector search, foresight filter, episode filter
+    # Step 0: Temporal expression detection 
+    IST = timezone(timedelta(hours=5, minutes=30))
+    current_ist = datetime.now(timezone.utc).astimezone(IST)
+    t0 = time.time()
+    temporal_result = parse_temporal_query(query, current_ist)
+    if temporal_result:
+        print(f"  [retrieval] Temporal parse: {temporal_result.get('date_from')} to {temporal_result.get('date_to')} "
+              f"(mixed={temporal_result.get('is_mixed', False)}) {time.time() - t0:.2f}s")
+    else:
+        print(f"  [retrieval] Temporal parse: none ({time.time() - t0:.2f}s)")
+
+    date_filter = None
+    effective_query_time = query_time
+    is_mixed = False
+
+    if temporal_result:
+        date_filter = {
+            "date_from": temporal_result["date_from"],
+            "date_to": temporal_result["date_to"],
+        }
+        is_mixed = temporal_result.get("is_mixed", False)
+        if not is_mixed:
+            effective_query_time = datetime.strptime(temporal_result["date_to"], "%Y-%m-%d")
+
+    # Compute query embedding 
+    
     t0 = time.time()
     query_embedding = embed_text(query)
     print(f"  [retrieval] Embed query: {time.time() - t0:.2f}s")
 
-    # Step 1: RRF hybrid search over atomic facts (temporal filtering applied when query_time set)
+    # Step 1: RRF hybrid search over atomic facts
     t0 = time.time()
-    top_facts = hybrid_search(query, top_k_facts, query_time=query_time,
-                              query_embedding=query_embedding)
+    if is_mixed:
+        # Two-pass retrieval for mixed queries (past + present)
+        historical_facts = hybrid_search(query, top_k_facts,
+                                         query_time=datetime.strptime(temporal_result["date_to"], "%Y-%m-%d"),
+                                         query_embedding=query_embedding, date_filter=date_filter)
+        current_facts = hybrid_search(query, top_k_facts, query_time=query_time,
+                                      query_embedding=query_embedding, date_filter=None)
+        top_facts = _merge_fact_results(historical_facts, current_facts)
+    else:
+        top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
+                                  query_embedding=query_embedding, date_filter=date_filter)
+
+        # Fallback: if date-filtered search returns too few results, retry without filter
+        if date_filter and len(top_facts) < 3:
+            print(f"  [retrieval] Date filter returned {len(top_facts)} facts, retrying without filter")
+            top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
+                                      query_embedding=query_embedding, date_filter=None)
+
     print(f"  [retrieval] Hybrid search ({len(top_facts)} facts): {time.time() - t0:.2f}s")
 
     if not top_facts:
@@ -196,10 +248,10 @@ def retrieve(query: str, query_time: datetime = None,
     scored_scenes = _score_scenes(top_facts)
     print(f"  [retrieval] Score scenes ({len(scored_scenes)} scenes): {time.time() - t0:.2f}s")
 
-    # Step 3: Select top-N scenes, pool their episodes (filtered by query_time)
+    # Step 3: Select top-N scenes, pool their episodes (filtered by effective_query_time)
     t0 = time.time()
     selected_scene_ids = [s["scene_id"] for s in scored_scenes[:top_n_scenes]]
-    all_episodes = _pool_episodes(selected_scene_ids, query_time=query_time)
+    all_episodes = _pool_episodes(selected_scene_ids, query_time=effective_query_time)
     print(f"  [retrieval] Pool episodes ({len(all_episodes)} from {len(selected_scene_ids)} scenes): {time.time() - t0:.2f}s")
 
     # Step 4: Re-rank episodes by fact scores (no extra embedding calls) + zero-score filter
@@ -216,15 +268,19 @@ def retrieve(query: str, query_time: datetime = None,
 
     # Step 6: Foresight filtering (semantic similarity + recency dedup)
     t0 = time.time()
-    active_foresight = filter_active_foresight(query_time, query_embedding=query_embedding)
+    active_foresight = filter_active_foresight(effective_query_time, query_embedding=query_embedding)
     print(f"  [retrieval] Foresight ({len(active_foresight)} active): {time.time() - t0:.2f}s")
 
-    # Step 7: Get user profile (only for "now" queries — profile is always latest state)
-    is_temporal_query = query_time and query_time.date() != datetime.now().date()
-    profile = None if is_temporal_query else db.get_user_profile()
+    # Step 7: Get user profile
+    
+    is_historical = (date_filter is not None
+                     and not is_mixed
+                     and effective_query_time.date() != datetime.now(timezone.utc).date())
+    profile = None if is_historical else db.get_user_profile()
 
     print(f"  [retrieval] Total: {time.time() - retrieval_start:.2f}s "
-          f"({len(ranked_episodes)} episodes, {len(top_facts)} facts, {len(active_foresight)} foresight)")
+          f"({len(ranked_episodes)} episodes, {len(top_facts)} facts, {len(active_foresight)} foresight)"
+          f"{' [temporal]' if date_filter else ''}")
 
     return {
         "episodes": ranked_episodes,
@@ -279,7 +335,7 @@ def compose_context(retrieval_result: dict) -> str:
             parts.append(f"- {fs['description']} (from: {source}, valid until: {until})")
         parts.append("")
 
-    # Top matching facts (P2: include conversation_date, I2: filter superseded)
+    # Top matching facts
     facts = retrieval_result.get("facts", [])
     if facts:
         fact_ids = [f["fact_id"] for f in facts]
