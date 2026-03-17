@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
-from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage
+from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog
 
 _pool = None
 
@@ -123,6 +123,17 @@ def init_schema():
 
         CREATE INDEX IF NOT EXISTS idx_messages_thread ON chat_messages (thread_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_messages_unprocessed ON chat_messages (ingested) WHERE ingested = FALSE;
+
+        CREATE TABLE IF NOT EXISTS query_logs (
+            id                  SERIAL PRIMARY KEY,
+            thread_id           VARCHAR(100),
+            query_text          TEXT NOT NULL,
+            response_text       TEXT,
+            memory_context      TEXT,
+            retrieval_metadata  JSONB,
+            created_at          TIMESTAMP DEFAULT NOW(),
+            query_time_utc      TIMESTAMP
+        );
     """)
     conn.commit()
     cur.close()
@@ -631,6 +642,26 @@ def get_threads_with_old_unprocessed(minutes: int = 10) -> list[str]:
     cur.close()
     release_connection(conn)
     return thread_ids
+
+
+# ── Query Log CRUD ──
+
+def insert_query_log(log: QueryLog) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO query_logs (thread_id, query_text, response_text, memory_context,
+                                   retrieval_metadata, query_time_utc)
+           VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+        (log.thread_id, log.query_text, log.response_text, log.memory_context,
+         json.dumps(log.retrieval_metadata) if log.retrieval_metadata else None,
+         log.query_time_utc)
+    )
+    log_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return log_id
 
 
 def get_system_stats() -> dict:

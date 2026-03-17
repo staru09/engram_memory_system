@@ -1,7 +1,18 @@
+import re
 import json
 from datetime import datetime
 from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
+
+_TEMPORAL_KEYWORDS = re.compile(
+    r'\b(kal|parso|aaj|today|yesterday|tomorrow|pehle|pahle|pichle|pichla|'
+    r'last\s+week|last\s+month|is\s+hafte|is\s+mahine|ago|din\s+pehle|'
+    r'hafte|mahine|saal|week|month|year|january|february|march|april|may|june|'
+    r'july|august|september|october|november|december|'
+    r'jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|'
+    r'\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b',
+    re.IGNORECASE
+)
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -48,6 +59,9 @@ def parse_temporal_query(query: str, current_time_ist: datetime) -> dict | None:
     Returns:
         {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD", "is_mixed": bool} or None
     """
+    if not _TEMPORAL_KEYWORDS.search(query):
+        return None
+
     prompt = _TEMPORAL_PROMPT.replace(
         "{current_time_ist}", current_time_ist.strftime("%Y-%m-%d %H:%M")
     ).replace("{query}", query)

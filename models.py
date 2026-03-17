@@ -79,3 +79,15 @@ class ChatMessage:
     content: str = ""
     created_at: Optional[datetime] = None
     ingested: bool = False
+
+
+@dataclass
+class QueryLog:
+    id: Optional[int] = None
+    thread_id: Optional[str] = None
+    query_text: str = ""
+    response_text: str = ""
+    memory_context: str = ""
+    retrieval_metadata: Optional[dict] = field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    query_time_utc: Optional[datetime] = None

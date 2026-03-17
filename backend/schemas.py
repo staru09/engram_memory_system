@@ -8,3 +8,8 @@ class ChatRequest(BaseModel):
 
 class CreateThreadRequest(BaseModel):
     title: str | None = None
+
+
+class QueryRequest(BaseModel):
+    query: str
+    thread_id: str | None = None

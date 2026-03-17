@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import db
 import vector_store
 from backend.ingestion import periodic_ingestion_check
-from backend.routes import threads, chat, stats, ingest
+from backend.routes import threads, chat, stats, ingest, query
 
 
 @asynccontextmanager
@@ -33,3 +33,4 @@ app.include_router(threads.router)
 app.include_router(chat.router)
 app.include_router(stats.router)
 app.include_router(ingest.router)
+app.include_router(query.router)

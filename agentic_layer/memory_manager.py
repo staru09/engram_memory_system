@@ -124,6 +124,7 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
             "is_sufficient": False,
             "rounds": 1,
             "result": result,
+            "sufficiency": {},
         }
 
     # Sufficiency check
@@ -174,4 +175,5 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
         "is_sufficient": is_sufficient,
         "rounds": current_round,
         "result": result,
+        "sufficiency": sufficiency if result["facts"] else {},
     }
