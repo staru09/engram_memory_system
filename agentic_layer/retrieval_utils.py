@@ -198,21 +198,35 @@ def filter_active_foresight(query_time: datetime = None,
     # keep only the most recent source_date. This ensures newer foresight
     # (e.g., "ACL injury" from Mar) supersedes older contradictory foresight
     # (e.g., "perfect health" from Feb) even without explicit conflict detection.
-    def _get_source_date(fs):
+    def _get_recency_key(fs):
+        """Return (source_date, created_at) for recency comparison.
+        Uses source_date (DATE) first, then created_at (TIMESTAMP) as tiebreaker
+        for foresight ingested on the same day."""
         sd = fs.get("source_date")
         if sd is None:
-            return date.min
-        if isinstance(sd, datetime):
-            return sd.date()
-        if isinstance(sd, date):
-            return sd
-        try:
-            return datetime.strptime(str(sd), "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            return date.min
+            source_d = date.min
+        elif isinstance(sd, datetime):
+            source_d = sd.date()
+        elif isinstance(sd, date):
+            source_d = sd
+        else:
+            try:
+                source_d = datetime.strptime(str(sd), "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                source_d = date.min
 
-    # Sort by source_date descending so newer items are processed first
-    with_emb.sort(key=lambda x: _get_source_date(x), reverse=True)
+        ca = fs.get("created_at")
+        if ca is None:
+            created = datetime.min
+        elif isinstance(ca, datetime):
+            created = ca
+        else:
+            created = datetime.min
+
+        return (source_d, created)
+
+    # Sort by recency descending (source_date first, created_at as tiebreaker)
+    with_emb.sort(key=lambda x: _get_recency_key(x), reverse=True)
 
     # First pass: recency dedup — for each topic cluster, keep only the newest
     recency_deduped = []
@@ -220,7 +234,7 @@ def filter_active_foresight(query_time: datetime = None,
         # Check if a more recent foresight about the same topic already exists
         is_stale = any(
             cosine_similarity(fs["embedding"], s["embedding"]) > 0.7
-            and _get_source_date(s) > _get_source_date(fs)
+            and _get_recency_key(s) > _get_recency_key(fs)
             for s in recency_deduped
         )
         if not is_stale:

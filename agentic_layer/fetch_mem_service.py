@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from config import RETRIEVAL_TOP_K, SCENE_TOP_N
 import db
@@ -214,6 +215,13 @@ def retrieve(query: str, query_time: datetime = None,
     query_embedding = embed_text(query)
     print(f"  [retrieval] Embed query: {time.time() - t0:.2f}s")
 
+    # Launch foresight filtering in parallel
+    foresight_executor = ThreadPoolExecutor(max_workers=1)
+    foresight_t0 = time.time()
+    foresight_future = foresight_executor.submit(
+        filter_active_foresight, effective_query_time, query_embedding=query_embedding
+    )
+
     # Step 1: RRF hybrid search over atomic facts
     t0 = time.time()
     if is_mixed:
@@ -237,8 +245,12 @@ def retrieve(query: str, query_time: datetime = None,
     print(f"  [retrieval] Hybrid search ({len(top_facts)} facts): {time.time() - t0:.2f}s")
 
     if not top_facts:
+        # Collect foresight result before returning
+        active_foresight = foresight_future.result()
+        foresight_executor.shutdown(wait=False)
+        print(f"  [retrieval] Foresight ({len(active_foresight)} active): {time.time() - foresight_t0:.2f}s")
         print(f"  [retrieval] No facts found, returning empty. Total: {time.time() - retrieval_start:.2f}s")
-        return {"episodes": [], "foresight": [], "profile": None, "facts": [], "scenes": []}
+        return {"episodes": [], "foresight": active_foresight, "profile": None, "facts": [], "scenes": []}
 
     # Step 1b: Deduplicate near-identical facts (cosine > 0.9)
     before_dedup = len(top_facts)
@@ -269,10 +281,10 @@ def retrieve(query: str, query_time: datetime = None,
     if len(ranked_episodes) < before_filter:
         print(f"  [retrieval] Episode filter: {before_filter} → {len(ranked_episodes)}")
 
-    # Step 6: Foresight filtering
-    t0 = time.time()
-    active_foresight = filter_active_foresight(effective_query_time, query_embedding=query_embedding)
-    print(f"  [retrieval] Foresight ({len(active_foresight)} active): {time.time() - t0:.2f}s")
+    # Collect foresight result
+    active_foresight = foresight_future.result()
+    foresight_executor.shutdown(wait=False)
+    print(f"  [retrieval] Foresight ({len(active_foresight)} active): {time.time() - foresight_t0:.2f}s [parallel]")
 
     # Step 7: Get user profile
     

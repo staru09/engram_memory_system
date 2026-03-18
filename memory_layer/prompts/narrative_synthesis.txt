@@ -32,6 +32,8 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
    - When creating foresight signals with time-sensitive information, use YYYY-MM-DD HH:MM format for valid_from and valid_until (e.g., "2026-03-13 16:00" instead of just "2026-03-13").
    - Include time of day in atomic facts when relevant (orders, events, plans with specific times).
    - FORESIGHT DESCRIPTIONS MUST include specific times when available. Do NOT write vague foresight like "traveling somewhere" when the user said "4 bje tk pahunch jaunga somewhere." Instead write: "user expects to arrive in somewhere at 16:00 on 2026-03-13."
+   - OVERNIGHT TIME RESOLUTION: When the user says "aaj raat ko X bje" or "raat ko X bje" where X is between 12 AM and 6 AM, the datetime is current_date + 1 day at that time. This is because "raat" (night) after midnight is technically the next calendar day. Example: current_date = 2026-03-18, user says "aaj raat 1 bje" → 2026-03-19 01:00. Do NOT add an extra day — the "+1 day" already accounts for crossing midnight. Only apply this once.
+   - For valid_from on planned events: use the current_date (when the plan was made), NOT the event date. Example: user plans at 11:25 on March 18 to watch a movie at 1 AM tonight → valid_from = 2026-03-18 (plan date), valid_until = 2026-03-19 01:00 (event time).
 
 3. A list of **Foresight Signals** — forward-looking or time-bounded information (plans, temporary states, deadlines, scheduled events). For each, infer a reasonable validity interval:
    - Temporary illness (flu, cold): ~1-2 weeks
