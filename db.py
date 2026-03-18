@@ -132,7 +132,7 @@ def init_schema():
             memory_context      TEXT,
             retrieval_metadata  JSONB,
             created_at          TIMESTAMP DEFAULT NOW(),
-            query_time_utc      TIMESTAMP
+            query_time          TIMESTAMP
         );
     """)
     conn.commit()
@@ -312,14 +312,12 @@ def insert_foresight(f: Foresight) -> int:
     return fid
 
 
-def get_active_foresight(query_time_utc, query_time_ist=None) -> list[dict]:
+def get_active_foresight(query_time) -> list[dict]:
     """Return foresight valid at the given time, with embeddings and source conversation date.
 
     Args:
-        query_time_utc: UTC datetime for valid_from/valid_until comparisons
-        query_time_ist: IST datetime for conversation_date comparison (falls back to query_time_utc)
+        query_time: IST datetime for all comparisons (conversation_date, valid_from, valid_until)
     """
-    source_date_filter = query_time_ist if query_time_ist is not None else query_time_utc
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
@@ -329,7 +327,7 @@ def get_active_foresight(query_time_utc, query_time_ist=None) -> list[dict]:
           AND f.valid_from <= %s
           AND (f.valid_until IS NULL OR f.valid_until >= %s)
         ORDER BY m.conversation_date DESC
-    """, (source_date_filter, query_time_utc, query_time_utc))
+    """, (query_time, query_time, query_time))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)
@@ -657,11 +655,11 @@ def insert_query_log(log: QueryLog) -> int:
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO query_logs (thread_id, query_text, response_text, memory_context,
-                                   retrieval_metadata, query_time_utc)
+                                   retrieval_metadata, query_time)
            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
         (log.thread_id, log.query_text, log.response_text, log.memory_context,
          json.dumps(log.retrieval_metadata) if log.retrieval_metadata else None,
-         log.query_time_utc)
+         log.query_time)
     )
     log_id = cur.fetchone()[0]
     conn.commit()

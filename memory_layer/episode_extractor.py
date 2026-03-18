@@ -24,7 +24,7 @@ def extract_episode(segment_dialogue: str, current_date: str = None) -> dict:
     """
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))
-        current_date = datetime.now(timezone.utc).astimezone(IST).strftime("%Y-%m-%d")
+        current_date = datetime.now(IST).strftime("%Y-%m-%d")
 
     prompt = _load_prompt().replace("{segment}", segment_dialogue).replace("{current_date}", current_date)
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)

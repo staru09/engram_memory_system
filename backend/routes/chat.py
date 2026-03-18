@@ -28,25 +28,24 @@ def chat(request: ChatRequest):
     db.insert_message(request.thread_id, "user", request.message)
 
     # 2. Get unindexed messages as short-term memory
-    query_time_utc = datetime.now(timezone.utc)
-    query_time_ist = query_time_utc.astimezone(IST)
+    query_time = datetime.now(IST)
     recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Retrieve memory context (long-term memory) — use UTC for DB comparisons
+    # 3. Retrieve memory context (long-term memory)
     memory_context = ""
     try:
         stats = db.get_system_stats()
         if stats["active_facts"] > 0:
-            result = retrieve(request.message, query_time_utc.replace(tzinfo=None))
+            result = retrieve(request.message, query_time.replace(tzinfo=None))
             memory_context = compose_context(result)
     except Exception as e:
         print(f"[Chat] Memory retrieval failed: {e}")
 
-    # 4. Build prompt — use IST for display
+    # 4. Build prompt
     prompt = build_chat_prompt(
         memory_context=memory_context,
         recent_messages=recent_messages,
-        query_time=query_time_ist,
+        query_time=query_time,
     )
 
     # 5. Call Gemini with time calculator tool
@@ -71,24 +70,23 @@ async def chat_stream(request: ChatRequest):
     db.insert_message(request.thread_id, "user", request.message)
 
     # 2. Get unindexed messages as short-term memory
-    query_time_utc = datetime.now(timezone.utc)
-    query_time_ist = query_time_utc.astimezone(IST)
+    query_time = datetime.now(IST)
     recent_messages = db.get_unprocessed_messages(request.thread_id)
 
     memory_context = ""
     try:
         stats = db.get_system_stats()
         if stats["active_facts"] > 0:
-            result = retrieve(request.message, query_time_utc.replace(tzinfo=None))
+            result = retrieve(request.message, query_time.replace(tzinfo=None))
             memory_context = compose_context(result)
     except Exception as e:
         print(f"[Chat Stream] Memory retrieval failed: {e}")
 
-    # 3. Build prompt — use IST for display
+    # 3. Build prompt
     prompt = build_chat_prompt(
         memory_context=memory_context,
         recent_messages=recent_messages,
-        query_time=query_time_ist,
+        query_time=query_time,
     )
 
     # 4. Stream from Gemini

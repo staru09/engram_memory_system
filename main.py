@@ -94,16 +94,12 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
             valid_from = None
             valid_until = None
             def _parse_foresight_dt(val):
-                """Parse foresight datetime from LLM output (IST) and convert to UTC for storage."""
+                """Parse foresight datetime from LLM output (IST). Stored as-is."""
                 if not val or val == "null" or val == "None":
                     return None
-                IST = timezone(timedelta(hours=5, minutes=30))
                 for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
                     try:
-                        dt = datetime.strptime(str(val).strip(), fmt)
-                        # LLM outputs IST (dialogue timestamps are IST) — convert to UTC for DB
-                        dt_ist = dt.replace(tzinfo=IST)
-                        return dt_ist.astimezone(timezone.utc).replace(tzinfo=None)
+                        return datetime.strptime(str(val).strip(), fmt)
                     except ValueError:
                         continue
                 return None
@@ -196,7 +192,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     """Async ingestion pipeline: parallel extraction, batch embedding, two-phase storage."""
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))
-        current_date = datetime.now(timezone.utc).astimezone(IST).strftime("%Y-%m-%d")
+        current_date = datetime.now(IST).strftime("%Y-%m-%d")
 
     print(f"[1/2] Segmenting conversation ({len(conversation)} turns)...")
     segments = extract_segments(conversation)

@@ -85,8 +85,7 @@ def _build_metadata(raw_result: dict, agentic_result: dict,
 
 @router.post("/query")
 def query_memory(request: QueryRequest):
-    query_time_utc = datetime.now(timezone.utc)
-    query_time_ist = query_time_utc.astimezone(IST)
+    query_time = datetime.now(IST)
 
     # 1. Check if any memories exist
     stats = db.get_system_stats()
@@ -94,7 +93,7 @@ def query_memory(request: QueryRequest):
         return {
             "response": "Abhi toh koi memory nahi hai yaar.",
             "metadata": {},
-            "query_time": query_time_ist.isoformat(),
+            "query_time": query_time.isoformat(),
         }
 
     # 2. Fetch short-term memory (unprocessed messages from thread)
@@ -106,7 +105,7 @@ def query_memory(request: QueryRequest):
     retrieval_start = time.time()
     agentic_result = agentic_retrieve(
         request.query,
-        query_time=query_time_utc.replace(tzinfo=None),
+        query_time=query_time.replace(tzinfo=None),
         verbose=True,
     )
     retrieval_time = time.time() - retrieval_start
@@ -119,7 +118,7 @@ def query_memory(request: QueryRequest):
         query=request.query,
         memory_context=context,
         recent_messages=recent_messages,
-        query_time=query_time_ist,
+        query_time=query_time,
     )
 
     # 4. Call Gemini with tools
@@ -138,7 +137,7 @@ def query_memory(request: QueryRequest):
             response_text=answer,
             memory_context=context,
             retrieval_metadata=metadata,
-            query_time_utc=query_time_utc.replace(tzinfo=None),
+            query_time=query_time.replace(tzinfo=None),
         )
         db.insert_query_log(log)
     except Exception as e:
@@ -147,5 +146,5 @@ def query_memory(request: QueryRequest):
     return {
         "response": answer,
         "metadata": metadata,
-        "query_time": query_time_ist.isoformat(),
+        "query_time": query_time.isoformat(),
     }

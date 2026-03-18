@@ -107,12 +107,12 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
             "result": dict,          # Raw retrieval result
         }
     """
+    IST = timezone(timedelta(hours=5, minutes=30))
     if query_time is None:
-        query_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        query_time = datetime.now(IST).replace(tzinfo=None)
 
     # Resolve temporal expression once — reused by sufficiency check
-    IST = timezone(timedelta(hours=5, minutes=30))
-    current_ist = datetime.now(timezone.utc).astimezone(IST)
+    current_ist = datetime.now(IST)
     temporal_result = parse_temporal_query(query, current_ist)
     temporal_info = None
     if temporal_result:

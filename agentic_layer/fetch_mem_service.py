@@ -176,18 +176,16 @@ def retrieve(query: str, query_time: datetime = None,
             "scenes": [...],         # Selected scene info
         }
     """
-    if query_time is None:
-        query_time = datetime.now(timezone.utc).replace(tzinfo=None)
-
-    # query_time is UTC (for foresight valid_from/valid_until comparisons)
-    # query_time_ist is IST (for conversation_date comparisons — that column stores IST dates)
     IST = timezone(timedelta(hours=5, minutes=30))
-    query_time_ist = query_time.replace(tzinfo=timezone.utc).astimezone(IST).replace(tzinfo=None)
+    if query_time is None:
+        query_time = datetime.now(IST).replace(tzinfo=None)
+
+    # query_time is IST — used for all comparisons (conversation_date, valid_from/valid_until)
 
     retrieval_start = time.time()
 
     # Step 0: Temporal expression detection
-    current_ist = datetime.now(timezone.utc).astimezone(IST)
+    current_ist = datetime.now(IST)
     t0 = time.time()
     temporal_result = parse_temporal_query(query, current_ist)
     if temporal_result:
@@ -197,8 +195,7 @@ def retrieve(query: str, query_time: datetime = None,
         print(f"  [retrieval] Temporal parse: none ({time.time() - t0:.2f}s)")
 
     date_filter = None
-    effective_query_time_ist = query_time_ist  # for conversation_date filters (IST)
-    effective_query_time_utc = query_time       # for foresight valid_from/valid_until (UTC)
+    effective_query_time = query_time  # IST — used for all filters
     is_mixed = False
 
     if temporal_result:
@@ -209,12 +206,7 @@ def retrieve(query: str, query_time: datetime = None,
         is_mixed = temporal_result.get("is_mixed", False)
         if not is_mixed:
             # Temporal queries: resolved date is IST (from temporal parser)
-            effective_query_time_ist = datetime.strptime(temporal_result["date_to"], "%Y-%m-%d")
-            # Convert to UTC for foresight comparisons
-            effective_query_time_utc = (
-                effective_query_time_ist.replace(tzinfo=IST)
-                .astimezone(timezone.utc).replace(tzinfo=None)
-            )
+            effective_query_time = datetime.strptime(temporal_result["date_to"], "%Y-%m-%d")
 
     # Compute query embedding 
     
@@ -222,24 +214,24 @@ def retrieve(query: str, query_time: datetime = None,
     query_embedding = embed_text(query)
     print(f"  [retrieval] Embed query: {time.time() - t0:.2f}s")
 
-    # Step 1: RRF hybrid search over atomic facts (uses IST for conversation_date filters)
+    # Step 1: RRF hybrid search over atomic facts
     t0 = time.time()
     if is_mixed:
         # Two-pass retrieval for mixed queries (past + present)
         historical_facts = hybrid_search(query, top_k_facts,
-                                         query_time=effective_query_time_ist,
+                                         query_time=effective_query_time,
                                          query_embedding=query_embedding, date_filter=date_filter)
-        current_facts = hybrid_search(query, top_k_facts, query_time=query_time_ist,
+        current_facts = hybrid_search(query, top_k_facts, query_time=query_time,
                                       query_embedding=query_embedding, date_filter=None)
         top_facts = _merge_fact_results(historical_facts, current_facts)
     else:
-        top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time_ist,
+        top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
                                   query_embedding=query_embedding, date_filter=date_filter)
 
         # Fallback: if date-filtered search returns too few results, retry without filter
         if date_filter and len(top_facts) < 3:
             print(f"  [retrieval] Date filter returned {len(top_facts)} facts, retrying without filter")
-            top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time_ist,
+            top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
                                       query_embedding=query_embedding, date_filter=None)
 
     print(f"  [retrieval] Hybrid search ({len(top_facts)} facts): {time.time() - t0:.2f}s")
@@ -259,10 +251,10 @@ def retrieve(query: str, query_time: datetime = None,
     scored_scenes = _score_scenes(top_facts)
     print(f"  [retrieval] Score scenes ({len(scored_scenes)} scenes): {time.time() - t0:.2f}s")
 
-    # Step 3: Select top-N scenes, pool their episodes (uses IST for conversation_date)
+    # Step 3: Select top-N scenes, pool their episodes
     t0 = time.time()
     selected_scene_ids = [s["scene_id"] for s in scored_scenes[:top_n_scenes]]
-    all_episodes = _pool_episodes(selected_scene_ids, query_time=effective_query_time_ist)
+    all_episodes = _pool_episodes(selected_scene_ids, query_time=effective_query_time)
     print(f"  [retrieval] Pool episodes ({len(all_episodes)} from {len(selected_scene_ids)} scenes): {time.time() - t0:.2f}s")
 
     # Step 4: Re-rank episodes by fact scores (no extra embedding calls) + zero-score filter
@@ -277,17 +269,16 @@ def retrieve(query: str, query_time: datetime = None,
     if len(ranked_episodes) < before_filter:
         print(f"  [retrieval] Episode filter: {before_filter} → {len(ranked_episodes)}")
 
-    # Step 6: Foresight filtering (uses UTC for valid_from/valid_until comparisons)
+    # Step 6: Foresight filtering
     t0 = time.time()
-    active_foresight = filter_active_foresight(effective_query_time_utc, query_embedding=query_embedding,
-                                                query_time_ist=effective_query_time_ist)
+    active_foresight = filter_active_foresight(effective_query_time, query_embedding=query_embedding)
     print(f"  [retrieval] Foresight ({len(active_foresight)} active): {time.time() - t0:.2f}s")
 
     # Step 7: Get user profile
     
     is_historical = (date_filter is not None
                      and not is_mixed
-                     and effective_query_time_ist.date() != datetime.now(timezone.utc).astimezone(IST).date())
+                     and effective_query_time.date() != datetime.now(IST).date())
     profile = None if is_historical else db.get_user_profile()
 
     print(f"  [retrieval] Total: {time.time() - retrieval_start:.2f}s "

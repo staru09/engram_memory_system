@@ -90,4 +90,4 @@ class QueryLog:
     memory_context: str = ""
     retrieval_metadata: Optional[dict] = field(default_factory=dict)
     created_at: Optional[datetime] = None
-    query_time_utc: Optional[datetime] = None
+    query_time: Optional[datetime] = None
