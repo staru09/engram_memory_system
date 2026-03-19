@@ -129,7 +129,7 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
     if verbose:
         print(f"\n[Retrieval Round 1] Query: '{query}'")
 
-    result = retrieve(query, query_time)
+    result = retrieve(query, query_time, temporal_result=temporal_result)
     context = compose_context(result)
 
     if verbose:
@@ -177,6 +177,7 @@ def agentic_retrieve(query: str, query_time: datetime = None, verbose: bool = Tr
                 print(f"  Rewrite {i}: '{rq}'")
 
         # Retrieve with each rewritten query and merge
+        # Rewritten queries don't reuse temporal_result — they're new queries with potentially different temporal intent
         for rq in rewrite_queries:
             new_result = retrieve(rq, query_time)
             result = _merge_retrieval_results(result, new_result)

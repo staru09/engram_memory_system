@@ -164,7 +164,8 @@ def _merge_fact_results(list_a: list[dict], list_b: list[dict]) -> list[dict]:
 
 def retrieve(query: str, query_time: datetime = None,
              top_k_facts: int = RETRIEVAL_TOP_K,
-             top_n_scenes: int = SCENE_TOP_N) -> dict:
+             top_n_scenes: int = SCENE_TOP_N,
+             temporal_result: dict = None) -> dict:
     """
     Full MemScene-guided retrieval pipeline.
 
@@ -185,15 +186,18 @@ def retrieve(query: str, query_time: datetime = None,
 
     retrieval_start = time.time()
 
-    # Step 0: Temporal expression detection
+    # Step 0: Temporal expression detection (skip if pre-computed by caller)
     current_ist = datetime.now(IST)
-    t0 = time.time()
-    temporal_result = parse_temporal_query(query, current_ist)
-    if temporal_result:
-        print(f"  [retrieval] Temporal parse: {temporal_result.get('date_from')} to {temporal_result.get('date_to')} "
-              f"(mixed={temporal_result.get('is_mixed', False)}) {time.time() - t0:.2f}s")
+    if temporal_result is None:
+        t0 = time.time()
+        temporal_result = parse_temporal_query(query, current_ist)
+        if temporal_result:
+            print(f"  [retrieval] Temporal parse: {temporal_result.get('date_from')} to {temporal_result.get('date_to')} "
+                  f"(mixed={temporal_result.get('is_mixed', False)}) {time.time() - t0:.2f}s")
+        else:
+            print(f"  [retrieval] Temporal parse: none ({time.time() - t0:.2f}s)")
     else:
-        print(f"  [retrieval] Temporal parse: none ({time.time() - t0:.2f}s)")
+        print(f"  [retrieval] Temporal parse: reusing pre-computed result")
 
     date_filter = None
     effective_query_time = query_time  # IST — used for all filters
