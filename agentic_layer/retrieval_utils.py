@@ -243,6 +243,9 @@ def filter_active_foresight(query_time: datetime = None,
     # Re-sort by query similarity for final selection
     recency_deduped.sort(key=lambda x: x["query_sim"], reverse=True)
 
+    # Filter out foresight with very low query relevance
+    recency_deduped = [fs for fs in recency_deduped if fs["query_sim"] >= 0.3]
+
     # Second pass: near-duplicate dedup (>0.9) and select top results
     selected = []
     for fs in recency_deduped:

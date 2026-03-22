@@ -15,6 +15,7 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
   const [metadata, setMetadata] = useState<QueryMetadata | null>(null);
   const [showMetadata, setShowMetadata] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
+  const [fastMode, setFastMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -62,7 +63,7 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
     setShowMetadata(false);
 
     try {
-      const result = await api.queryMemory(queryText.trim(), threadId);
+      const result = await api.queryMemory(queryText.trim(), threadId, fastMode);
       setResponse(result.response);
       setMetadata(result.metadata);
     } catch {
@@ -87,9 +88,23 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
             <Search size={20} className="text-[#00a884]" />
             <h2 className="text-[#111b21] font-semibold text-lg">Query Memory</h2>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-200 rounded-full transition-colors">
-            <X size={20} className="text-[#54656f]" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setFastMode(!fastMode)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                fastMode
+                  ? 'bg-[#00a884] text-white'
+                  : 'bg-gray-200 text-[#667781]'
+              }`}
+              title={fastMode ? 'Fast mode: facts only (no episodes)' : 'Normal mode: full pipeline'}
+            >
+              <Zap size={12} className="inline mr-1" />
+              {fastMode ? 'Fast' : 'Normal'}
+            </button>
+            <button onClick={onClose} className="p-1.5 hover:bg-gray-200 rounded-full transition-colors">
+              <X size={20} className="text-[#54656f]" />
+            </button>
+          </div>
         </div>
 
         {/* Search Input */}

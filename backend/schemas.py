@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class ChatRequest(BaseModel):
     thread_id: str
     message: str
+    fast: bool = False
 
 
 class CreateThreadRequest(BaseModel):
@@ -13,3 +14,4 @@ class CreateThreadRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     thread_id: str | None = None
+    fast: bool = False

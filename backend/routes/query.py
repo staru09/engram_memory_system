@@ -6,6 +6,7 @@ from fastapi import APIRouter
 import db
 from models import QueryLog
 from agentic_layer.memory_manager import agentic_retrieve
+from agentic_layer.fetch_mem_service import retrieve_fast, compose_context_fast
 from backend.schemas import QueryRequest
 from backend.gemini import call_gemini_with_tools
 from backend.prompt import build_query_prompt
@@ -101,17 +102,28 @@ def query_memory(request: QueryRequest):
     if request.thread_id:
         recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Run agentic retrieval (no message storing, no ingestion)
+    # 3. Run retrieval (no message storing, no ingestion)
     retrieval_start = time.time()
-    agentic_result = agentic_retrieve(
-        request.query,
-        query_time=query_time.replace(tzinfo=None),
-        verbose=True,
-    )
+    if request.fast:
+        # Facts-only retrieval — skip scenes, episodes, sufficiency loop
+        raw_result = retrieve_fast(request.query, query_time=query_time.replace(tzinfo=None))
+        context = compose_context_fast(raw_result)
+        agentic_result = {
+            "context": context,
+            "is_sufficient": True,
+            "rounds": 1,
+            "result": raw_result,
+            "sufficiency": {},
+        }
+    else:
+        agentic_result = agentic_retrieve(
+            request.query,
+            query_time=query_time.replace(tzinfo=None),
+            verbose=True,
+        )
+        context = agentic_result["context"]
+        raw_result = agentic_result["result"]
     retrieval_time = time.time() - retrieval_start
-
-    context = agentic_result["context"]
-    raw_result = agentic_result["result"]
 
     # 4. Build query-specific prompt
     prompt = build_query_prompt(
