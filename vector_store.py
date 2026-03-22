@@ -43,11 +43,14 @@ def _date_to_int(date_str: str) -> int:
 
 
 def upsert_fact(fact_id: int, memcell_id: int, embedding: list[float],
-                conversation_date: str = None):
+                conversation_date: str = None, fact_text: str = None):
     client = get_client()
     payload = {"fact_id": fact_id, "memcell_id": memcell_id}
     if conversation_date:
         payload["conversation_date"] = _date_to_int(conversation_date)
+        payload["conversation_date_str"] = conversation_date  # for display in RRF results
+    if fact_text:
+        payload["fact_text"] = fact_text
     client.upsert(
         collection_name="facts",
         points=[
@@ -107,6 +110,8 @@ def search_facts(query_embedding: list[float], top_k: int = 10,
             "fact_id": hit.payload["fact_id"],
             "memcell_id": hit.payload["memcell_id"],
             "score": hit.score,
+            "fact_text": hit.payload.get("fact_text", ""),
+            "conversation_date_str": hit.payload.get("conversation_date_str"),
         }
         for hit in results.points
     ]

@@ -13,7 +13,7 @@ def _get_pool():
     global _pool
     if _pool is None or _pool.closed:
         _pool = ThreadedConnectionPool(
-            minconn=2, maxconn=20,
+            minconn=5, maxconn=20,
             host=PG_HOST, port=PG_PORT,
             user=PG_USER, password=PG_PASSWORD,
             dbname=PG_DB
@@ -203,15 +203,16 @@ def update_memcell_scene(memcell_id: int, scene_id: int):
 
 
 def get_memcells_by_scene(scene_id: int, query_time=None) -> list[dict]:
+    """Fetch memcells by scene — excludes embedding column (used by cluster_manager for summaries)."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     if query_time:
         cur.execute(
-            "SELECT * FROM memcells WHERE scene_id = %s AND conversation_date <= %s ORDER BY created_at",
+            "SELECT id, episode_text, raw_dialogue, created_at, source_id, scene_id, conversation_date FROM memcells WHERE scene_id = %s AND conversation_date <= %s ORDER BY created_at",
             (scene_id, query_time)
         )
     else:
-        cur.execute("SELECT * FROM memcells WHERE scene_id = %s ORDER BY created_at", (scene_id,))
+        cur.execute("SELECT id, episode_text, raw_dialogue, created_at, source_id, scene_id, conversation_date FROM memcells WHERE scene_id = %s ORDER BY created_at", (scene_id,))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)
@@ -256,8 +257,15 @@ def keyword_search_facts(query: str, top_k: int = 10, query_time=None,
     Args:
         date_filter: Optional {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}
     """
+    print(f"    [keyword-debug] query='{query}', query_time={query_time}, date_filter={date_filter}")
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Log what PostgreSQL parses the query into
+    cur.execute("SELECT plainto_tsquery('english', %s)::text AS parsed", (query,))
+    parsed = cur.fetchone()
+    print(f"    [keyword-debug] tsquery='{parsed['parsed']}'")
+
     if date_filter:
         cur.execute("""
             SELECT id, memcell_id, fact_text, conversation_date,
@@ -313,7 +321,7 @@ def insert_foresight(f: Foresight) -> int:
 
 
 def get_active_foresight(query_time) -> list[dict]:
-    """Return foresight valid at the given time, with embeddings and source conversation date.
+    """Return foresight valid at the given time, WITHOUT embeddings (fast).
 
     Args:
         query_time: IST datetime for all comparisons (conversation_date, valid_from, valid_until)
@@ -321,7 +329,9 @@ def get_active_foresight(query_time) -> list[dict]:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
-        SELECT f.*, m.conversation_date AS source_date FROM foresight f
+        SELECT f.id, f.memcell_id, f.description, f.valid_from, f.valid_until,
+               f.created_at, m.conversation_date AS source_date
+        FROM foresight f
         JOIN memcells m ON f.memcell_id = m.id
         WHERE m.conversation_date <= %s
           AND f.valid_from <= %s
@@ -332,6 +342,19 @@ def get_active_foresight(query_time) -> list[dict]:
     cur.close()
     release_connection(conn)
     return rows
+
+
+def get_foresight_embeddings(foresight_ids: list[int]) -> dict:
+    """Fetch embeddings for specific foresight IDs. Returns {id: embedding}."""
+    if not foresight_ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, embedding FROM foresight WHERE id = ANY(%s)", (foresight_ids,))
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return {r["id"]: r["embedding"] for r in rows if r.get("embedding")}
 
 
 def update_foresight_embedding(foresight_id: int, embedding: list[float]):
@@ -449,9 +472,10 @@ def get_user_profile() -> UserProfile | None:
 
 
 def get_memcell_by_id(memcell_id: int) -> dict | None:
+    """Fetch single memcell — excludes embedding."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM memcells WHERE id = %s", (memcell_id,))
+    cur.execute("SELECT id, episode_text, raw_dialogue, created_at, source_id, scene_id, conversation_date FROM memcells WHERE id = %s", (memcell_id,))
     row = cur.fetchone()
     cur.close()
     release_connection(conn)
@@ -459,12 +483,12 @@ def get_memcell_by_id(memcell_id: int) -> dict | None:
 
 
 def get_memcells_by_ids(memcell_ids: list[int]) -> dict[int, dict]:
-    """Batch fetch multiple memcells by ID in a single query. Returns {id: row_dict}."""
+    """Batch fetch multiple memcells by ID — excludes embedding (used by scene scoring, only needs scene_id)."""
     if not memcell_ids:
         return {}
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM memcells WHERE id = ANY(%s)", (list(memcell_ids),))
+    cur.execute("SELECT id, episode_text, created_at, source_id, scene_id, conversation_date FROM memcells WHERE id = ANY(%s)", (list(memcell_ids),))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)
@@ -472,22 +496,36 @@ def get_memcells_by_ids(memcell_ids: list[int]) -> dict[int, dict]:
 
 
 def get_memcells_by_scenes(scene_ids: list[int], query_time=None) -> list[dict]:
-    """Batch fetch memcells for multiple scenes in a single query."""
+    """Batch fetch memcells for multiple scenes — excludes embedding for speed.
+    Use get_memcell_embeddings() to fetch embeddings separately if needed."""
     if not scene_ids:
         return []
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     if query_time:
         cur.execute(
-            "SELECT * FROM memcells WHERE scene_id = ANY(%s) AND conversation_date <= %s ORDER BY created_at",
+            "SELECT id, episode_text, raw_dialogue, created_at, source_id, scene_id, conversation_date FROM memcells WHERE scene_id = ANY(%s) AND conversation_date <= %s ORDER BY created_at",
             (list(scene_ids), query_time)
         )
     else:
-        cur.execute("SELECT * FROM memcells WHERE scene_id = ANY(%s) ORDER BY created_at", (list(scene_ids),))
+        cur.execute("SELECT id, episode_text, raw_dialogue, created_at, source_id, scene_id, conversation_date FROM memcells WHERE scene_id = ANY(%s) ORDER BY created_at", (list(scene_ids),))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)
     return rows
+
+
+def get_memcell_embeddings(memcell_ids: list[int]) -> dict:
+    """Fetch embeddings for specific memcell IDs. Returns {id: embedding}."""
+    if not memcell_ids:
+        return {}
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, embedding FROM memcells WHERE id = ANY(%s) AND embedding IS NOT NULL", (list(memcell_ids),))
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return {r["id"]: r["embedding"] for r in rows}
 
 
 def get_fact_by_id(fact_id: int) -> dict | None:
@@ -530,6 +568,21 @@ def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
     cur.close()
     release_connection(conn)
     return valid
+
+
+def get_superseded_fact_ids(query_time) -> set[int]:
+    """Return set of fact IDs that are superseded at query_time. Used for fast pre-filtering."""
+    query_date = query_time.date() if isinstance(query_time, datetime) else query_time
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id FROM atomic_facts
+        WHERE superseded_on IS NOT NULL AND superseded_on <= %s
+    """, (query_date,))
+    superseded = {row[0] for row in cur.fetchall()}
+    cur.close()
+    release_connection(conn)
+    return superseded
 
 
 # ── Chat CRUD ──

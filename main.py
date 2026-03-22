@@ -73,10 +73,10 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
             fact_id = await loop.run_in_executor(_executor, db.insert_atomic_fact, fact)
             fact_ids.append(fact_id)
 
-        # Upsert vectors into Qdrant
-        for fact_id, embedding in zip(fact_ids, embeddings):
+        # Upsert vectors into Qdrant (with fact_text in payload to avoid DB fetch during retrieval)
+        for fact_id, fact_text, embedding in zip(fact_ids, atomic_facts, embeddings):
             await loop.run_in_executor(
-                _executor, vector_store.upsert_fact, fact_id, memcell_id, embedding, current_date
+                _executor, vector_store.upsert_fact, fact_id, memcell_id, embedding, current_date, fact_text
             )
 
         # Store episode embedding in memcells table

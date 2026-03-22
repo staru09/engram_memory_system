@@ -11,7 +11,7 @@ from agentic_layer.vectorize_service import embed_text
 FORESIGHT_MAX_RESULTS = 5
 FORESIGHT_CACHE_TTL = 60 
 
-_foresight_cache = {"data": None, "ts": 0}
+_foresight_cache = {"data": None, "embeddings": None, "ts": 0}
 
 
 def _get_foresight_cached(query_time) -> list[dict]:
@@ -28,6 +28,7 @@ def _get_foresight_cached(query_time) -> list[dict]:
 def invalidate_foresight_cache():
     """Call after ingestion to force fresh foresight on next query."""
     _foresight_cache["data"] = None
+    _foresight_cache["embeddings"] = None
     _foresight_cache["ts"] = 0
 
 
@@ -81,21 +82,29 @@ def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],
                            "conversation_date": result.get("conversation_date")}
         scores[fid]["rrf_score"] += RRF_KEYWORD_WEIGHT / (k + rank)
 
-    # Batch-fetch any vector-only facts (not already in keyword results)
-    vec_only_ids = [r["fact_id"] for r in vector_results if r["fact_id"] not in kw_ids]
-    vec_facts_map = db.get_facts_by_ids(vec_only_ids) if vec_only_ids else {}
-
     # Score from vector results (baseline weight)
+    # fact_text and conversation_date now come from Qdrant payload — no DB call needed
+    vec_only_ids = []
     for rank, result in enumerate(vector_results, start=1):
         fid = result["fact_id"]
         if fid not in scores:
-            fact = vec_facts_map.get(fid)
-            fact_text = fact["fact_text"] if fact else ""
-            conv_date = fact.get("conversation_date") if fact else None
+            fact_text = result.get("fact_text", "")
+            conv_date = result.get("conversation_date_str")
+            # Fallback: if Qdrant payload doesn't have fact_text (old data), mark for DB fetch
+            if not fact_text:
+                vec_only_ids.append(fid)
             scores[fid] = {"fact_id": fid, "memcell_id": result["memcell_id"],
                            "fact_text": fact_text, "rrf_score": 0.0,
                            "conversation_date": conv_date}
         scores[fid]["rrf_score"] += RRF_VECTOR_WEIGHT / (k + rank)
+
+    # Fallback DB fetch only for facts without payload data (old data before migration)
+    if vec_only_ids:
+        vec_facts_map = db.get_facts_by_ids(vec_only_ids)
+        for fid, fact in vec_facts_map.items():
+            if fid in scores and not scores[fid]["fact_text"]:
+                scores[fid]["fact_text"] = fact.get("fact_text", "")
+                scores[fid]["conversation_date"] = fact.get("conversation_date")
 
     # Sort by RRF score descending
     merged = sorted(scores.values(), key=lambda x: x["rrf_score"], reverse=True)
@@ -113,20 +122,49 @@ def hybrid_search(query: str, top_k: int = RETRIEVAL_TOP_K,
     if query_embedding is None:
         query_embedding = embed_text(query)
 
-    # Run keyword + vector search in parallel
+    # Run keyword + vector search in parallel with individual timing
+    t_parallel_start = _time.time()
+    kw_timing = {}
+    vec_timing = {}
+
+    def _timed_keyword():
+        t = _time.time()
+        results = keyword_search(query, top_k, query_time, date_filter)
+        kw_timing["duration"] = _time.time() - t
+        return results
+
+    def _timed_vector():
+        t = _time.time()
+        results = vector_search(query_embedding, top_k, date_filter)
+        vec_timing["duration"] = _time.time() - t
+        return results
+
     with ThreadPoolExecutor(max_workers=2) as executor:
-        kw_future = executor.submit(keyword_search, query, top_k, query_time, date_filter)
-        vec_future = executor.submit(vector_search, query_embedding, top_k, date_filter)
+        kw_future = executor.submit(_timed_keyword)
+        vec_future = executor.submit(_timed_vector)
         kw_results = kw_future.result()
         vec_results = vec_future.result()
+    parallel_total = _time.time() - t_parallel_start
+    print(f"    [hybrid] Keyword: {kw_timing['duration']:.2f}s ({len(kw_results)} results)")
+    print(f"    [hybrid] Vector:  {vec_timing['duration']:.2f}s ({len(vec_results)} results)")
+    print(f"    [hybrid] Parallel total: {parallel_total:.2f}s")
 
+    t0 = _time.time()
+    kw_fact_ids = {r["id"] for r in kw_results}
     fused = rrf_fusion(kw_results, vec_results)
+    print(f"    [hybrid] RRF fusion ({len(fused)} merged): {_time.time() - t0:.2f}s")
 
+    # Post-fusion temporal filter — only for vector-only facts
+    # Keyword results are already filtered by conversation_date + superseded_on in SQL
     if query_time:
-        valid_ids = db.filter_facts_by_time(
-            [f["fact_id"] for f in fused], query_time
-        )
-        fused = [f for f in fused if f["fact_id"] in valid_ids]
+        vec_only_in_fused = [f["fact_id"] for f in fused if f["fact_id"] not in kw_fact_ids]
+        if vec_only_in_fused:
+            t0 = _time.time()
+            valid_vec_ids = db.filter_facts_by_time(vec_only_in_fused, query_time)
+            fused = [f for f in fused if f["fact_id"] in kw_fact_ids or f["fact_id"] in valid_vec_ids]
+            print(f"    [hybrid] Post-fusion filter ({len(vec_only_in_fused)} vec-only → {len([f for f in fused if f['fact_id'] not in kw_fact_ids])} valid): {_time.time() - t0:.2f}s")
+        else:
+            print(f"    [hybrid] Post-fusion filter: skipped (all facts from keyword)")
 
     return fused[:top_k]
 
@@ -183,7 +221,14 @@ def filter_active_foresight(query_time: datetime = None,
     if not query_embedding or not all_foresight:
         return all_foresight
 
-    # Only consider foresight with stored embeddings
+    # Lazy-load embeddings: cached separately from metadata to keep metadata fetch fast (~0.25s vs ~1.3s)
+    if _foresight_cache["embeddings"] is None:
+        foresight_ids = [fs["id"] for fs in all_foresight]
+        _foresight_cache["embeddings"] = db.get_foresight_embeddings(foresight_ids)
+    embedding_map = _foresight_cache["embeddings"]
+    for fs in all_foresight:
+        fs["embedding"] = embedding_map.get(fs["id"])
+
     with_emb = [fs for fs in all_foresight if fs.get("embedding")]
     without_emb = [fs for fs in all_foresight if not fs.get("embedding")]
 

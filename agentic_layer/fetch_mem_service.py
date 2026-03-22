@@ -51,9 +51,10 @@ def _pool_episodes(scene_ids: list[int], query_time=None) -> list[dict]:
     Gather all episodes (MemCells) from the selected scenes.
     When query_time is provided, only includes episodes from conversations
     that happened on or before that date.
-    Returns list of {memcell_id, episode_text, scene_id, created_at, conversation_date, embedding}.
+    Embeddings fetched lazily via _load_episode_embeddings() before semantic filter.
+    Returns list of {memcell_id, episode_text, scene_id, created_at, conversation_date}.
     """
-    # Single batch query for all scenes
+    # Single batch query for all scenes (no embeddings — saves ~24KB per row over network)
     cells = db.get_memcells_by_scenes(scene_ids, query_time=query_time)
 
     episodes = []
@@ -67,9 +68,16 @@ def _pool_episodes(scene_ids: list[int], query_time=None) -> list[dict]:
                 "scene_id": cell["scene_id"],
                 "created_at": cell["created_at"],
                 "conversation_date": cell.get("conversation_date"),
-                "embedding": cell.get("embedding"),
             })
     return episodes
+
+
+def _load_episode_embeddings(episodes: list[dict]):
+    """Lazily fetch embeddings for episodes that need semantic filtering."""
+    memcell_ids = [ep["memcell_id"] for ep in episodes]
+    embedding_map = db.get_memcell_embeddings(memcell_ids)
+    for ep in episodes:
+        ep["embedding"] = embedding_map.get(ep["memcell_id"])
 
 
 def _rerank_episodes(episodes: list[dict], scored_facts: list[dict],
@@ -261,33 +269,44 @@ def retrieve(query: str, query_time: datetime = None,
         return {"episodes": [], "foresight": active_foresight, "profile": None, "facts": [], "scenes": []}
 
     # Step 1b: Deduplicate near-identical facts (cosine > 0.9)
+    t0 = time.time()
     before_dedup = len(top_facts)
     top_facts = deduplicate_facts(top_facts)
-    if len(top_facts) < before_dedup:
-        print(f"  [retrieval] Dedup: {before_dedup} → {len(top_facts)} facts")
+    print(f"  [retrieval] Fact dedup: {before_dedup} → {len(top_facts)} facts ({time.time() - t0:.2f}s)")
 
     # Step 2: Score MemScenes by best fact score
     t0 = time.time()
     scored_scenes = _score_scenes(top_facts)
     print(f"  [retrieval] Score scenes ({len(scored_scenes)} scenes): {time.time() - t0:.2f}s")
 
-    # Step 3: Select top-N scenes, pool their episodes
+    # Step 3: Select top-N scenes, pool their episodes (no embeddings fetched)
     t0 = time.time()
     selected_scene_ids = [s["scene_id"] for s in scored_scenes[:top_n_scenes]]
     all_episodes = _pool_episodes(selected_scene_ids, query_time=effective_query_time)
     print(f"  [retrieval] Pool episodes ({len(all_episodes)} from {len(selected_scene_ids)} scenes): {time.time() - t0:.2f}s")
 
     # Step 4: Re-rank episodes by fact scores (no extra embedding calls) + zero-score filter
+    t0 = time.time()
     ranked_episodes = _rerank_episodes(all_episodes, top_facts)
+    print(f"  [retrieval] Rerank episodes: {len(all_episodes)} → {len(ranked_episodes)} ({time.time() - t0:.2f}s)")
+
+    # Step 4b: Lazy-load embeddings only for reranked episodes (fewer than pooled)
+    t0 = time.time()
+    if ranked_episodes:
+        _load_episode_embeddings(ranked_episodes)
+    print(f"  [retrieval] Load episode embeddings ({len(ranked_episodes)} eps): {time.time() - t0:.2f}s")
 
     # Step 5: Semantic similarity filter on episodes
-    before_filter = len(ranked_episodes)
+    t0 = time.time()
+    before_semantic = len(ranked_episodes)
     ranked_episodes = _filter_episodes_by_similarity(ranked_episodes, query_embedding)
+    print(f"  [retrieval] Semantic filter: {before_semantic} → {len(ranked_episodes)} episodes ({time.time() - t0:.2f}s)")
 
     # Step 5b: Filter out stale episodes (>50% superseded facts)
+    t0 = time.time()
+    before_stale = len(ranked_episodes)
     ranked_episodes = _filter_stale_episodes(ranked_episodes)
-    if len(ranked_episodes) < before_filter:
-        print(f"  [retrieval] Episode filter: {before_filter} → {len(ranked_episodes)}")
+    print(f"  [retrieval] Staleness filter: {before_stale} → {len(ranked_episodes)} episodes ({time.time() - t0:.2f}s)")
 
     # Collect foresight result (was running in parallel with Steps 1-5)
     active_foresight, foresight_duration = foresight_future.result()
@@ -295,11 +314,12 @@ def retrieve(query: str, query_time: datetime = None,
     print(f"  [retrieval] Foresight ({len(active_foresight)} active): {foresight_duration:.2f}s [parallel]")
 
     # Step 7: Get user profile
-    
+    t0 = time.time()
     is_historical = (date_filter is not None
                      and not is_mixed
                      and effective_query_time.date() != datetime.now(IST).date())
     profile = None if is_historical else db.get_user_profile()
+    print(f"  [retrieval] Profile: {'skipped (historical)' if is_historical else 'fetched'} ({time.time() - t0:.2f}s)")
 
     print(f"  [retrieval] Total: {time.time() - retrieval_start:.2f}s "
           f"({len(ranked_episodes)} episodes, {len(top_facts)} facts, {len(active_foresight)} foresight)"
@@ -315,7 +335,7 @@ def retrieve(query: str, query_time: datetime = None,
 
 
 FAST_FACTS_LIMIT = 10
-FAST_FACT_MIN_SCORE = 0.02  # drop facts below this RRF score (noise)
+FAST_FACT_MIN_SCORE = 0.01  # drop facts below this RRF score (noise)
 FAST_FORESIGHT_MIN_SIM = 0.7  # drop foresight below this query similarity
 
 
@@ -363,72 +383,100 @@ def retrieve_fast(query: str, query_time: datetime = None,
     query_embedding = embed_text(query)
     print(f"  [fast-retrieval] Embed query: {time.time() - t0:.2f}s")
 
-    # Step 2: Launch foresight in parallel with hybrid search
-    foresight_executor = ThreadPoolExecutor(max_workers=1)
+    # Step 2: Launch ALL searches in parallel — keyword, vector, foresight, profile
+    is_historical = (date_filter is not None
+                     and not is_mixed
+                     and effective_query_time.date() != datetime.now(IST).date())
+
+    parallel_executor = ThreadPoolExecutor(max_workers=5)
+    timings = {}
+
+    def _run_keyword():
+        from agentic_layer.retrieval_utils import keyword_search
+        t = time.time()
+        result = keyword_search(query, top_k_facts, effective_query_time, date_filter)
+        timings["keyword"] = time.time() - t
+        return result
+
+    def _run_vector():
+        from agentic_layer.retrieval_utils import vector_search
+        t = time.time()
+        result = vector_search(query_embedding, top_k_facts, date_filter)
+        timings["vector"] = time.time() - t
+        return result
 
     def _run_foresight():
         t = time.time()
         result = filter_active_foresight(effective_query_time, query_embedding=query_embedding)
-        return result, time.time() - t
+        timings["foresight"] = time.time() - t
+        return result
 
-    foresight_future = foresight_executor.submit(_run_foresight)
+    def _run_profile():
+        t = time.time()
+        result = None if is_historical else db.get_user_profile()
+        timings["profile"] = time.time() - t
+        return result
 
-    # Step 3: Hybrid search (keyword ∥ vector → RRF)
+    def _run_superseded():
+        t = time.time()
+        result = db.get_superseded_fact_ids(effective_query_time)
+        timings["superseded"] = time.time() - t
+        return result
+
     t0 = time.time()
-    if is_mixed:
-        historical_facts = hybrid_search(query, top_k_facts,
-                                         query_time=effective_query_time,
-                                         query_embedding=query_embedding, date_filter=date_filter)
-        current_facts = hybrid_search(query, top_k_facts, query_time=query_time,
-                                      query_embedding=query_embedding, date_filter=None)
-        top_facts = _merge_fact_results(historical_facts, current_facts)
-    else:
-        top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
-                                  query_embedding=query_embedding, date_filter=date_filter)
-        if date_filter and len(top_facts) < 3:
-            print(f"  [fast-retrieval] Date filter returned {len(top_facts)} facts, retrying without filter")
-            top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
-                                      query_embedding=query_embedding, date_filter=None)
+    kw_future = parallel_executor.submit(_run_keyword)
+    vec_future = parallel_executor.submit(_run_vector)
+    foresight_future = parallel_executor.submit(_run_foresight)
+    profile_future = parallel_executor.submit(_run_profile)
+    superseded_future = parallel_executor.submit(_run_superseded)
 
-    print(f"  [fast-retrieval] Hybrid search ({len(top_facts)} facts): {time.time() - t0:.2f}s")
+    # Wait for all
+    kw_results = kw_future.result()
+    vec_results = vec_future.result()
+    active_foresight = foresight_future.result()
+    profile = profile_future.result()
+    superseded_ids = superseded_future.result()
+    parallel_executor.shutdown(wait=False)
+    parallel_total = time.time() - t0
+
+    print(f"    [parallel] Keyword:    {timings.get('keyword', 0):.2f}s ({len(kw_results)} results)")
+    print(f"    [parallel] Vector:     {timings.get('vector', 0):.2f}s ({len(vec_results)} results)")
+    print(f"    [parallel] Foresight:  {timings.get('foresight', 0):.2f}s ({len(active_foresight)} results)")
+    print(f"    [parallel] Profile:    {timings.get('profile', 0):.2f}s ({'skipped' if is_historical else 'fetched'})")
+    print(f"    [parallel] Superseded: {timings.get('superseded', 0):.2f}s ({len(superseded_ids)} ids)")
+    print(f"    [parallel] Total:      {parallel_total:.2f}s (wall clock)")
+
+    # Step 3: RRF fusion + local superseded filter (no DB call needed — pre-fetched in parallel)
+    from agentic_layer.retrieval_utils import rrf_fusion
+    t0 = time.time()
+    kw_fact_ids = {r["id"] for r in kw_results}
+    top_facts = rrf_fusion(kw_results, vec_results)
+
+    # Filter out superseded facts using pre-fetched set (local lookup, ~0ms)
+    before_filter = len(top_facts)
+    top_facts = [f for f in top_facts if f["fact_id"] not in superseded_ids]
+    if len(top_facts) < before_filter:
+        print(f"    [post-fusion] Superseded filter: {before_filter} → {len(top_facts)} (local, {time.time() - t0:.4f}s)")
+
+    top_facts = top_facts[:top_k_facts]
+    print(f"  [fast-retrieval] Fusion + filter: {len(top_facts)} facts ({time.time() - t0:.4f}s)")
 
     if not top_facts:
-        active_foresight, foresight_duration = foresight_future.result()
-        foresight_executor.shutdown(wait=False)
-        print(f"  [fast-retrieval] Foresight ({len(active_foresight)} active): {foresight_duration:.2f}s [parallel]")
         print(f"  [fast-retrieval] No facts found. Total: {time.time() - retrieval_start:.2f}s")
-        return {"episodes": [], "foresight": active_foresight, "profile": None, "facts": [], "scenes": []}
+        return {"episodes": [], "foresight": active_foresight, "profile": profile, "facts": [], "scenes": []}
 
-    # Step 4: Fact deduplication
-    before_dedup = len(top_facts)
-    top_facts = deduplicate_facts(top_facts)
-    if len(top_facts) < before_dedup:
-        print(f"  [fast-retrieval] Dedup: {before_dedup} → {len(top_facts)} facts")
-
-    # Step 5: Drop low-scoring facts (noise) — skip when date_filter is active
-    # Date-filtered queries already have precision from the date range, so even low-scoring facts are relevant
+    # Step 4: Drop low-scoring facts (noise) — skip when date_filter is active
     if not date_filter:
         before_score_filter = len(top_facts)
         top_facts = [f for f in top_facts if f["rrf_score"] >= FAST_FACT_MIN_SCORE]
         if len(top_facts) < before_score_filter:
             print(f"  [fast-retrieval] Score filter: {before_score_filter} → {len(top_facts)} facts (min score: {FAST_FACT_MIN_SCORE})")
 
-    # Collect foresight (was running in parallel)
-    active_foresight, foresight_duration = foresight_future.result()
-    foresight_executor.shutdown(wait=False)
-
     # Filter out irrelevant foresight by query similarity
     before_foresight_filter = len(active_foresight)
     active_foresight = [fs for fs in active_foresight if fs.get("query_sim", 0.0) >= FAST_FORESIGHT_MIN_SIM]
     if len(active_foresight) < before_foresight_filter:
         print(f"  [fast-retrieval] Foresight relevance filter: {before_foresight_filter} → {len(active_foresight)}")
-    print(f"  [fast-retrieval] Foresight ({len(active_foresight)} active): {foresight_duration:.2f}s [parallel]")
-
-    # Profile
-    is_historical = (date_filter is not None
-                     and not is_mixed
-                     and effective_query_time.date() != datetime.now(IST).date())
-    profile = None if is_historical else db.get_user_profile()
 
     print(f"  [fast-retrieval] Total: {time.time() - retrieval_start:.2f}s "
           f"({len(top_facts)} facts, {len(active_foresight)} foresight)"
