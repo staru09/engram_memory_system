@@ -249,47 +249,65 @@ def deactivate_fact(fact_id: int, superseded_on: str = None):
     release_connection(conn)
 
 
+def _to_or_query(query: str) -> str:
+    """Convert a query string to OR-separated words for websearch_to_tsquery.
+    'meri favorite coffee' → 'meri OR favorite OR coffee'
+    This ensures any single matching English word returns results,
+    critical for Hinglish queries where most words are Hindi."""
+    words = query.strip().split()
+    return " OR ".join(words) if words else query
+
+
 def keyword_search_facts(query: str, top_k: int = 10, query_time=None,
                          date_filter: dict = None) -> list[dict]:
-    """Full-text search on atomic_facts using ts_rank.
+    """Full-text search on atomic_facts using websearch_to_tsquery with OR logic.
+    Any matching token returns results (not all tokens required).
+    ts_rank naturally scores documents with more matching tokens higher.
 
     Args:
         date_filter: Optional {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}
     """
+    or_query = _to_or_query(query)
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Debug: show what PostgreSQL parses the OR query into
+    cur.execute("SELECT websearch_to_tsquery('english', %s)::text AS parsed", (or_query,))
+    parsed = cur.fetchone()
+    print(f"    [keyword-debug] or_query='{or_query}' → tsquery='{parsed['parsed']}'")
+
     if date_filter:
         cur.execute("""
             SELECT id, memcell_id, fact_text, conversation_date,
-                   ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
+                   ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE conversation_date BETWEEN %s AND %s
               AND is_active = TRUE
-              AND fact_tsv @@ plainto_tsquery('english', %s)
+              AND fact_tsv @@ websearch_to_tsquery('english', %s)
             ORDER BY rank DESC
             LIMIT %s
-        """, (query, date_filter["date_from"], date_filter["date_to"], query, top_k))
+        """, (or_query, date_filter["date_from"], date_filter["date_to"], or_query, top_k))
     elif query_time:
         cur.execute("""
             SELECT id, memcell_id, fact_text, conversation_date,
-                   ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
+                   ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE conversation_date <= %s
               AND (superseded_on IS NULL OR superseded_on > %s)
-              AND fact_tsv @@ plainto_tsquery('english', %s)
+              AND fact_tsv @@ websearch_to_tsquery('english', %s)
             ORDER BY rank DESC
             LIMIT %s
-        """, (query, query_time, query_time, query, top_k))
+        """, (or_query, query_time, query_time, or_query, top_k))
     else:
         cur.execute("""
             SELECT id, memcell_id, fact_text, conversation_date,
-                   ts_rank(fact_tsv, plainto_tsquery('english', %s)) AS rank
+                   ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE is_active = TRUE
-              AND fact_tsv @@ plainto_tsquery('english', %s)
+              AND fact_tsv @@ websearch_to_tsquery('english', %s)
             ORDER BY rank DESC
             LIMIT %s
-        """, (query, query, top_k))
+        """, (or_query, or_query, top_k))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)
