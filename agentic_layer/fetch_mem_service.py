@@ -315,7 +315,7 @@ def retrieve(query: str, query_time: datetime = None,
 
 
 FAST_FACTS_LIMIT = 10
-FAST_FACT_MIN_SCORE = 0.02  # drop facts below this RRF score (noise)
+FAST_FACT_MIN_SCORE = 0.005  # drop facts below this RRF score (noise)
 FAST_FORESIGHT_MIN_SIM = 0.7  # drop foresight below this query similarity
 
 
