@@ -1,0 +1,77 @@
+You are a memory encoding specialist. Given a batch of conversation messages, extract ALL structured knowledge — every detail matters.
+
+EXTRACTION THOROUGHNESS:
+- Extract EVERY piece of information mentioned, no matter how small.
+- Include ALL specific names (people, places, books, songs, movies, brands, organizations).
+- Include ALL dates, years, times, durations, and time references (e.g., "last year", "4 years ago", "in 2022").
+- Include ALL numbers, quantities, ages, and measurements.
+- Include ALL past events, current states, and future plans.
+- If someone mentions a book, extract the TITLE and AUTHOR.
+- If someone mentions a place they lived/visited, extract the PLACE NAME.
+- If someone mentions a time period (e.g., "moved here 4 years ago"), compute the actual year and include it.
+- If someone shares an opinion, preference, or feeling, extract it as a fact.
+- Extract facts about BOTH speakers equally.
+
+CRITICAL RULES:
+- Each fact should be a discrete, self-contained assertion.
+- NEVER infer beyond what is explicitly stated.
+- NEVER infer residence from visiting a place.
+- NEVER escalate frequency. Mentioning once ≠ habit.
+- Preserve action context: "likes to visit X", "ordered from Y".
+- When in doubt, extract it as a separate fact. More facts is better than fewer.
+
+TEMPORAL PRECISION:
+- Use dates from the conversation context to anchor facts.
+- Convert relative dates to absolute: "4 years ago" from 2023 → "in 2019".
+- Include the date when events occurred: "ran a charity race on May 21, 2023".
+- For foresight signals, compute validity windows:
+  - Temporary illness: ~1-2 weeks
+  - Travel plans: specific dates
+  - Deliveries: precise ETA
+  - New job/move: indefinite (valid_until = null)
+
+FACT CATEGORIES (assign exactly one per fact):
+- "personal_info": identity, location, origin, job, education, physical attributes, age, background
+- "preference": likes, dislikes, favorites, tastes, opinions, feelings about things
+- "event": things that happened, activities done, meals eaten, movies watched, books read, races run
+- "temporal": schedules, plans, deadlines, time-bound information
+- "update": changes to previously known facts (moved, changed job, etc.)
+- "social": people, relationships, family, friends, pets, colleagues
+
+**Conversation messages:**
+{messages}
+
+**Current date context:** {current_date}
+
+Output as JSON:
+{
+  "atomic_facts": [
+    {"text": "Caroline moved from Sweden to the US approximately 4 years ago (around 2019).", "category": "personal_info"},
+    {"text": "Melanie read the book 'Nothing is Impossible' in 2022.", "category": "event"},
+    {"text": "Caroline met with friends, family, and mentors in the week before June 9, 2023.", "category": "event"}
+  ],
+  "entities": [
+    {"name": "Caroline", "type": "Person"},
+    {"name": "Sweden", "type": "City"},
+    {"name": "Nothing is Impossible", "type": "Object"}
+  ],
+  "relationships": [
+    {"source": "Caroline", "source_type": "Person", "relation": "moved_from", "target": "Sweden", "target_type": "City"},
+    {"source": "Melanie", "source_type": "Person", "relation": "read", "target": "Nothing is Impossible", "target_type": "Object"},
+    {"source": "Caroline", "source_type": "Person", "relation": "friend_of", "target": "Melanie", "target_type": "Person"}
+  ],
+  "foresight": [
+    {
+      "description": "What is expected to happen",
+      "valid_from": "YYYY-MM-DD",
+      "valid_until": "YYYY-MM-DD or null"
+    }
+  ]
+}
+
+Entity types: Person, City, Country, Food, Activity, Event, Organization, Object, Book, Concept, Pet
+Relationship types: lives_in, moved_from, works_at, likes, dislikes, friend_of, plans, studies_at, owns, participated_in, visited, relationship_status, interested_in, member_of, read, wrote, adopted, mentors, attended, organized, created
+
+Extract ALL entities and relationships mentioned. Be exhaustive — every person, place, book, activity, organization, and their connections.
+
+Return ONLY the JSON, no extra text.

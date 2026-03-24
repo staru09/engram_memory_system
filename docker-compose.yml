@@ -20,6 +20,17 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  neo4j:
+    image: neo4j:5-community
+    container_name: evermemos_neo4j
+    environment:
+      NEO4J_AUTH: neo4j/evermemos123
+    ports:
+      - "7474:7474"  # HTTP browser
+      - "7687:7687"  # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: evermemos_pgadmin
@@ -34,3 +45,4 @@ services:
 volumes:
   pgdata:
   qdrant_data:
+  neo4j_data:

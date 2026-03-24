@@ -499,6 +499,38 @@ def get_user_profile() -> UserProfile | None:
     )
 
 
+def update_user_profile_facts(facts: list[str]):
+    """Update only the explicit_facts field of user profile (incremental update)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM user_profile LIMIT 1")
+    existing = cur.fetchone()
+    if existing:
+        cur.execute(
+            "UPDATE user_profile SET explicit_facts = %s, updated_at = NOW() WHERE id = %s",
+            (json.dumps(facts), existing[0])
+        )
+    else:
+        cur.execute(
+            "INSERT INTO user_profile (explicit_facts) VALUES (%s)",
+            (json.dumps(facts),)
+        )
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+
+
+def get_fact_by_id(fact_id: int) -> dict | None:
+    """Fetch a single fact by ID."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, fact_text, category, is_active, conversation_date FROM atomic_facts WHERE id = %s", (fact_id,))
+    row = cur.fetchone()
+    cur.close()
+    release_connection(conn)
+    return row
+
+
 def get_memcell_by_id(memcell_id: int) -> dict | None:
     """Fetch single memcell — excludes embedding."""
     conn = get_connection()
@@ -596,6 +628,19 @@ def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
     cur.close()
     release_connection(conn)
     return valid
+
+
+def filter_active_fact_ids(fact_ids: list[int]) -> set[int]:
+    """Return subset of fact_ids that are currently active (is_active=TRUE)."""
+    if not fact_ids:
+        return set()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM atomic_facts WHERE id = ANY(%s) AND is_active = TRUE", (list(fact_ids),))
+    active = {row[0] for row in cur.fetchall()}
+    cur.close()
+    release_connection(conn)
+    return active
 
 
 def insert_fact_update(old_fact_id: int, new_fact_id: int = None, update_type: str = "change") -> int:

@@ -1,9 +1,12 @@
+import os
 import threading
 import time
 from datetime import timezone, timedelta
 
 import db
 from main import ingest_conversation
+
+USE_V2 = os.getenv("INGESTION_V2", "false").lower() == "true"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -30,7 +33,11 @@ def run_background_ingestion(thread_id: str, messages: list[dict]):
         current_date = last_ts.astimezone(IST).strftime("%Y-%m-%d")
         source_id = f"thread_{thread_id}_{current_date}"
 
-        ingest_conversation(conversation, source_id=source_id, current_date=current_date)
+        if USE_V2:
+            from main_v2 import ingest_v2
+            ingest_v2(conversation, source_id=source_id, current_date=current_date)
+        else:
+            ingest_conversation(conversation, source_id=source_id, current_date=current_date)
 
         message_ids = [msg["id"] for msg in messages]
         db.mark_messages_ingested(message_ids)

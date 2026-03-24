@@ -407,11 +407,12 @@ def retrieve_fast(query: str, query_time: datetime = None,
                      and not is_mixed
                      and effective_query_time.date() != datetime.now(IST).date())
 
-    # Detect query category for filtered search
-    query_categories = detect_query_category(query)
-    cat_filter = query_categories if query_categories != ['all'] else None
+    # Category filter disabled for benchmark — uncomment for production
+    # query_categories = detect_query_category(query)
+    # cat_filter = query_categories if query_categories != ['all'] else None
+    cat_filter = None
 
-    parallel_executor = ThreadPoolExecutor(max_workers=5)
+    parallel_executor = ThreadPoolExecutor(max_workers=6)
     timings = {}
 
     def _run_keyword():
@@ -446,12 +447,24 @@ def retrieve_fast(query: str, query_time: datetime = None,
         timings["superseded"] = time.time() - t
         return result
 
+    def _run_graph():
+        t = time.time()
+        try:
+            import graph_store
+            result = graph_store.search_graph_for_query(query, max_depth=2)
+            timings["graph"] = time.time() - t
+            return result
+        except Exception:
+            timings["graph"] = time.time() - t
+            return []
+
     t0 = time.time()
     kw_future = parallel_executor.submit(_run_keyword)
     vec_future = parallel_executor.submit(_run_vector)
     foresight_future = parallel_executor.submit(_run_foresight)
     profile_future = parallel_executor.submit(_run_profile)
     superseded_future = parallel_executor.submit(_run_superseded)
+    graph_future = parallel_executor.submit(_run_graph)
 
     # Wait for all
     kw_results = kw_future.result()
@@ -459,6 +472,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
     active_foresight = foresight_future.result()
     profile = profile_future.result()
     superseded_ids = superseded_future.result()
+    graph_relationships = graph_future.result()
     parallel_executor.shutdown(wait=False)
     parallel_total = time.time() - t0
 
@@ -468,6 +482,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
     print(f"    [parallel] Foresight:  {timings.get('foresight', 0):.2f}s ({len(active_foresight)} results)")
     print(f"    [parallel] Profile:    {timings.get('profile', 0):.2f}s ({'skipped' if is_historical else 'fetched'})")
     print(f"    [parallel] Superseded: {timings.get('superseded', 0):.2f}s ({len(superseded_ids)} ids)")
+    print(f"    [parallel] Graph:      {timings.get('graph', 0):.2f}s ({len(graph_relationships)} rels)")
     print(f"    [parallel] Total:      {parallel_total:.2f}s (wall clock)")
 
     # Step 3: RRF fusion + local superseded filter (no DB call needed — pre-fetched in parallel)
@@ -512,6 +527,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
         "profile": profile,
         "facts": top_facts[:top_k_facts],
         "scenes": [],
+        "relationships": graph_relationships,
     }
 
 
@@ -540,6 +556,14 @@ def compose_context_fast(retrieval_result: dict) -> str:
             source = fs["source_date"].strftime("%Y-%m-%d") if hasattr(fs.get("source_date"), 'strftime') else (str(fs["source_date"]) if fs.get("source_date") else "unknown")
             until = fs["valid_until"].strftime("%Y-%m-%d") if fs.get("valid_until") else "indefinite"
             parts.append(f"- {fs['description']} (from: {source}, valid until: {until})")
+        parts.append("")
+
+    # Relationships from graph
+    relationships = retrieval_result.get("relationships", [])
+    if relationships:
+        parts.append("=== Relationships ===")
+        for r in relationships:
+            parts.append(f"- {r['source']} --{r['relation']}--> {r['target']}")
         parts.append("")
 
     # Top matching facts (more than usual to compensate for missing episodes)
