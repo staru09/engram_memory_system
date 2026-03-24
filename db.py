@@ -134,6 +134,23 @@ def init_schema():
             created_at          TIMESTAMP DEFAULT NOW(),
             query_time          TIMESTAMP
         );
+
+        -- Category column for atomic_facts
+        DO $$ BEGIN
+            ALTER TABLE atomic_facts ADD COLUMN category VARCHAR(50);
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$;
+
+        CREATE INDEX IF NOT EXISTS idx_facts_category ON atomic_facts (category) WHERE is_active = TRUE;
+
+        -- Fact updates tracking table
+        CREATE TABLE IF NOT EXISTS fact_updates (
+            id              SERIAL PRIMARY KEY,
+            old_fact_id     INTEGER REFERENCES atomic_facts(id),
+            new_fact_id     INTEGER REFERENCES atomic_facts(id),
+            update_type     VARCHAR(50),
+            created_at      TIMESTAMP DEFAULT NOW()
+        );
     """)
     conn.commit()
     cur.close()
@@ -225,8 +242,8 @@ def insert_atomic_fact(fact: AtomicFact) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO atomic_facts (memcell_id, fact_text, is_active, conversation_date) VALUES (%s, %s, %s, %s) RETURNING id",
-        (fact.memcell_id, fact.fact_text, fact.is_active, fact.conversation_date)
+        "INSERT INTO atomic_facts (memcell_id, fact_text, is_active, conversation_date, category) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (fact.memcell_id, fact.fact_text, fact.is_active, fact.conversation_date, getattr(fact, 'category', None))
     )
     fact_id = cur.fetchone()[0]
     conn.commit()
@@ -579,6 +596,21 @@ def filter_facts_by_time(fact_ids: list[int], query_time) -> set[int]:
     cur.close()
     release_connection(conn)
     return valid
+
+
+def insert_fact_update(old_fact_id: int, new_fact_id: int = None, update_type: str = "change") -> int:
+    """Record a fact update (UPDATE/DELETE operation). Returns update id."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO fact_updates (old_fact_id, new_fact_id, update_type) VALUES (%s, %s, %s) RETURNING id",
+        (old_fact_id, new_fact_id, update_type)
+    )
+    update_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return update_id
 
 
 def get_superseded_fact_ids(query_time) -> set[int]:

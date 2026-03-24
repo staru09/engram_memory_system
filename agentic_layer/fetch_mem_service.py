@@ -335,7 +335,26 @@ def retrieve(query: str, query_time: datetime = None,
 
 
 FAST_FACTS_LIMIT = 10
-FAST_FACT_MIN_SCORE = 0.01  # drop facts below this RRF score (noise)
+FAST_FACT_MIN_SCORE = 0.005  # drop facts below this RRF score (noise)
+
+
+def detect_query_category(query: str) -> list[str]:
+    """Detect query category via regex for category-filtered Qdrant search. ~0ms."""
+    q = query.lower()
+    categories = []
+
+    if any(w in q for w in ['pasand', 'favourite', 'favorite', 'like', 'prefer', 'best', 'accha', 'pसंद']):
+        categories.append('preference')
+    if any(w in q for w in ['naam', 'name', 'kaha rehta', 'live', 'job', 'kaam', 'college', 'padhai', 'rehta', 'kha rehta']):
+        categories.append('personal_info')
+    if any(w in q for w in ['kya kiya', 'kya hua', 'khaya', 'dekha', 'gaya', 'order', 'bought', 'kharida', 'piya', 'suna']):
+        categories.append('event')
+    if any(w in q for w in ['friend', 'dost', 'family', 'papa', 'mama', 'bhai', 'ghar', 'parivar', 'ma ka', 'papa ka']):
+        categories.append('social')
+    if any(w in q for w in ['plan', 'schedule', 'kab', 'when', 'marathon', 'flight', 'trip']):
+        categories.append('temporal')
+
+    return categories or ['all']
 FAST_FORESIGHT_MIN_SIM = 0.7  # drop foresight below this query similarity
 
 
@@ -388,6 +407,10 @@ def retrieve_fast(query: str, query_time: datetime = None,
                      and not is_mixed
                      and effective_query_time.date() != datetime.now(IST).date())
 
+    # Detect query category for filtered search
+    query_categories = detect_query_category(query)
+    cat_filter = query_categories if query_categories != ['all'] else None
+
     parallel_executor = ThreadPoolExecutor(max_workers=5)
     timings = {}
 
@@ -401,7 +424,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
     def _run_vector():
         from agentic_layer.retrieval_utils import vector_search
         t = time.time()
-        result = vector_search(query_embedding, top_k_facts, date_filter)
+        result = vector_search(query_embedding, top_k_facts, date_filter, category_filter=cat_filter)
         timings["vector"] = time.time() - t
         return result
 
@@ -439,6 +462,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
     parallel_executor.shutdown(wait=False)
     parallel_total = time.time() - t0
 
+    print(f"    [parallel] Category:   {cat_filter or 'all'}")
     print(f"    [parallel] Keyword:    {timings.get('keyword', 0):.2f}s ({len(kw_results)} results)")
     print(f"    [parallel] Vector:     {timings.get('vector', 0):.2f}s ({len(vec_results)} results)")
     print(f"    [parallel] Foresight:  {timings.get('foresight', 0):.2f}s ({len(active_foresight)} results)")

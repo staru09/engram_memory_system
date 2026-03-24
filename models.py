@@ -12,6 +12,7 @@ class AtomicFact:
     created_at: Optional[datetime] = None
     conversation_date: Optional[str] = None
     superseded_on: Optional[str] = None
+    category: Optional[str] = None  # personal_info, preference, event, temporal, update, social
 
 
 @dataclass

@@ -55,28 +55,40 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
         seg_label = f"Segment {seg['segment_id']}: {seg['topic_hint']}"
         print(f"       [phase1] Starting {seg_label}")
 
+        # Normalize facts: support both old format (list[str]) and new format (list[dict])
+        fact_entries = []
+        for f in atomic_facts:
+            if isinstance(f, dict):
+                fact_entries.append({"text": f.get("text", ""), "category": f.get("category")})
+            else:
+                fact_entries.append({"text": str(f), "category": None})
+        fact_texts = [f["text"] for f in fact_entries]
+        fact_categories = [f["category"] for f in fact_entries]
+
         # Store MemCell
         cell = MemCell(episode_text=episode_text, raw_dialogue=seg["dialogue"],
                        source_id=source_id, conversation_date=current_date)
         memcell_id = await loop.run_in_executor(_executor, db.insert_memcell, cell)
 
         # Batch-embed all facts
-        if atomic_facts:
-            embeddings = await loop.run_in_executor(_executor, embed_texts, atomic_facts)
+        if fact_texts:
+            embeddings = await loop.run_in_executor(_executor, embed_texts, fact_texts)
         else:
             embeddings = []
 
-        # Insert facts into PostgreSQL
+        # Insert facts into PostgreSQL (with category)
         fact_ids = []
-        for fact_text in atomic_facts:
-            fact = AtomicFact(memcell_id=memcell_id, fact_text=fact_text, conversation_date=current_date)
+        for fact_text, category in zip(fact_texts, fact_categories):
+            fact = AtomicFact(memcell_id=memcell_id, fact_text=fact_text,
+                              conversation_date=current_date, category=category)
             fact_id = await loop.run_in_executor(_executor, db.insert_atomic_fact, fact)
             fact_ids.append(fact_id)
 
-        # Upsert vectors into Qdrant (with fact_text in payload to avoid DB fetch during retrieval)
-        for fact_id, fact_text, embedding in zip(fact_ids, atomic_facts, embeddings):
+        # Upsert vectors into Qdrant (with fact_text + category in payload)
+        for fact_id, fact_text, category, embedding in zip(fact_ids, fact_texts, fact_categories, embeddings):
             await loop.run_in_executor(
-                _executor, vector_store.upsert_fact, fact_id, memcell_id, embedding, current_date, fact_text
+                _executor, vector_store.upsert_fact, fact_id, memcell_id, embedding,
+                current_date, fact_text, category
             )
 
         # Store episode embedding in memcells table
@@ -124,14 +136,14 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
             _executor, assign_to_scene, memcell_id, episode_text, episode_embedding, scene_hint
         )
 
-        print(f"   [phase1] Done {seg_label} → scene {scene_id}, {len(atomic_facts)} facts")
+        print(f"   [phase1] Done {seg_label} → scene {scene_id}, {len(fact_texts)} facts")
 
         return {
             "memcell_id": memcell_id,
             "scene_id": scene_id,
             "seg_label": seg_label,
             "fact_ids": fact_ids,
-            "atomic_facts": atomic_facts,
+            "atomic_facts": fact_texts,  # plain strings for conflict detection
             "embeddings": embeddings,
         }
 

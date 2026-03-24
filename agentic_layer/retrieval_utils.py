@@ -53,12 +53,14 @@ def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K, query_time=None,
 
 
 def vector_search(query_embedding: list[float], top_k: int = RETRIEVAL_TOP_K,
-                   date_filter: dict = None) -> list[dict]:
+                   date_filter: dict = None, category_filter: list[str] = None) -> list[dict]:
     """
     Qdrant cosine similarity search using a pre-computed query embedding.
+    Optional category_filter narrows search to specific fact categories.
     Returns list of {fact_id, memcell_id, score}.
     """
-    return vector_store.search_facts(query_embedding, top_k, date_filter=date_filter)
+    return vector_store.search_facts(query_embedding, top_k, date_filter=date_filter,
+                                     category_filter=category_filter)
 
 
 def rrf_fusion(keyword_results: list[dict], vector_results: list[dict],

@@ -55,7 +55,10 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
 Output as JSON:
 {
   "episode": "Third-person narrative here...",
-  "atomic_facts": ["Fact 1", "Fact 2"],
+  "atomic_facts": [
+    {"text": "Fact 1", "category": "preference"},
+    {"text": "Fact 2", "category": "event"}
+  ],
   "foresight": [
     {
       "description": "What is expected to happen or is temporarily true",
@@ -68,5 +71,13 @@ Output as JSON:
     "summary": "One-sentence summary of the memory scene."
   }
 }
+
+Fact categories (assign exactly one per fact):
+- "personal_info": identity, location, job, education, physical attributes
+- "preference": likes, dislikes, favorites, tastes
+- "event": things that happened, activities done, meals eaten, movies watched
+- "temporal": schedules, plans, deadlines, time-bound information
+- "update": changes to previously known facts (moved, changed job, etc.)
+- "social": people, relationships, family, friends
 
 Return ONLY the JSON, no extra text.
