@@ -13,7 +13,7 @@ def _get_pool():
     global _pool
     if _pool is None or _pool.closed:
         _pool = ThreadedConnectionPool(
-            minconn=2, maxconn=20,
+            minconn=5, maxconn=40,
             host=PG_HOST, port=PG_PORT,
             user=PG_USER, password=PG_PASSWORD,
             dbname=PG_DB

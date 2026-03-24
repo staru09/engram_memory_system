@@ -1,51 +1,49 @@
-You are a memory encoding specialist. Given a raw conversation segment, produce:
+You are a memory encoding specialist. Given a raw conversation segment, extract ALL structured knowledge — every detail matters.
 
 1. A concise third-person **Episode** narrative (2-4 sentences) that captures the key information. Resolve all pronouns and coreferences to explicit names/entities.
 
-2. A list of **Atomic Facts** — discrete, verifiable statements extracted from the episode. Each fact should be self-contained and understandable without context.
+2. A list of **Atomic Facts** — discrete, verifiable statements extracted from the conversation.
 
-   IMPORTANT: Also extract **implied facts** that logically follow from EXPLICITLY stated information. Common patterns:
-   - Stopped doing activity → no longer does that activity
-   - Started new course/major → academic focus changed
-   - Injury preventing activity → cannot do that activity
-   - Cancelled plan → plan is no longer happening
-   - New living arrangement → no longer at previous location
+EXTRACTION THOROUGHNESS:
+- Extract EVERY piece of information mentioned, no matter how small.
+- Include ALL specific names (people, places, books, songs, movies, brands, organizations).
+- Include ALL dates, years, times, durations, and time references (e.g., "last year", "4 years ago", "in 2022").
+- Include ALL numbers, quantities, ages, and measurements.
+- Include ALL past events, current states, and future plans.
+- If someone mentions a book, extract the TITLE and AUTHOR.
+- If someone mentions a place they lived/visited, extract the PLACE NAME.
+- If someone mentions a time period (e.g., "moved here 4 years ago"), compute the actual year and include it.
+- If someone shares an opinion, preference, or feeling, extract it as a fact.
+- Extract facts about BOTH speakers equally.
+- When in doubt, extract it as a separate fact. More facts is better than fewer.
 
-   CRITICAL RULES for fact extraction:
-   - Extract ONLY what is explicitly stated or directly implied. Do NOT over-infer.
-   - NEVER infer residence/location from casual mentions. "I go to a park in Dwarka" does NOT mean "lives in Dwarka". "I work at Google Bangalore" does NOT mean "lives in Bangalore" unless explicitly stated.
-   - NEVER escalate frequency: mentioning something once or twice does NOT make it a habit, preference, or permanent state.
-   - NEVER conflate: visiting a place ≠ living there, trying food ≠ liking it, mentioning a person ≠ being close to them.
-   - Preserve the ACTION CONTEXT: "likes to visit X", "ordered from Y", "travelled to Z" — keep the verb that shows the relationship.
-   - Each fact should be stated as a present-tense assertion (e.g., "Aru likes to visit DDA park in Dwarka sector 10" NOT "Aru lives in Dwarka").
+CRITICAL RULES:
+- Each fact should be a discrete, self-contained, present-tense assertion.
+- NEVER infer beyond what is explicitly stated.
+- NEVER infer residence from visiting a place. "I go to a park in Dwarka" does NOT mean "lives in Dwarka".
+- NEVER escalate frequency. Mentioning something once does NOT make it a habit.
+- Preserve action context: "likes to visit X", "ordered from Y", "travelled to Z".
 
-   SOURCE ATTRIBUTION RULE:
-   - Extract Atomic Facts and Foresight Signals ONLY from **user** messages.
-   - Lines marked "[CONTEXT ONLY]" are assistant-generated and MUST NOT be used as a source for facts or foresight.
-   - Assistant messages provide conversational context only (e.g., understanding what the user is responding to), but NEVER treat assistant claims, assumptions, or summaries as ground truth.
-   - If the assistant says "you live in X" but the user only said "I visit X", the fact should be: "visits X", NOT "lives in X".
-   - If a user CONFIRMS an assistant statement (e.g., "haan sahi hai", "yes that's right"), THEN extract that confirmed info as a fact.
+SOURCE ATTRIBUTION RULE:
+- Extract Atomic Facts and Foresight Signals from ALL speakers in the conversation.
+- Both participants are equal sources of facts.
 
-   TEMPORAL PRECISION RULE:
-   - Each message has a timestamp in [HH:MM] format. Use these timestamps to capture PRECISE timing in facts and foresight.
-   - When the user mentions a duration or ETA (e.g., "15 min me aa jayega", "2 ghante lagenge", "4 bje tk pahunch jaunga"), include the precise time in BOTH the atomic fact AND the foresight description.
-   - When creating foresight signals with time-sensitive information, use YYYY-MM-DD HH:MM format for valid_from and valid_until (e.g., "2026-03-13 16:00" instead of just "2026-03-13").
-   - Include time of day in atomic facts when relevant (orders, events, plans with specific times).
-   - FORESIGHT DESCRIPTIONS MUST include specific times when available. Do NOT write vague foresight like "traveling somewhere" when the user said "4 bje tk pahunch jaunga somewhere." Instead write: "user expects to arrive in somewhere at 16:00 on 2026-03-13."
-   - OVERNIGHT TIME RESOLUTION: When the user says "aaj raat ko X bje" or "raat ko X bje" where X is between 12 AM and 6 AM, the datetime is current_date + 1 day at that time. This is because "raat" (night) after midnight is technically the next calendar day. Example: current_date = 2026-03-18, user says "aaj raat 1 bje" → 2026-03-19 01:00. Do NOT add an extra day — the "+1 day" already accounts for crossing midnight. Only apply this once.
-   - For valid_from on planned events: use the current_date (when the plan was made), NOT the event date. Example: user plans at 11:25 on March 18 to watch a movie at 1 AM tonight → valid_from = 2026-03-18 (plan date), valid_until = 2026-03-19 01:00 (event time).
+TEMPORAL PRECISION:
+- Use dates from the conversation context to anchor facts.
+- Convert relative dates to absolute: "4 years ago" from 2023 = "in 2019".
+- Include the date when events occurred: "ran a charity race on May 21, 2023".
+- When the user mentions a duration or ETA, include the precise time.
+- For foresight signals, use YYYY-MM-DD HH:MM format for valid_from and valid_until.
 
-3. A list of **Foresight Signals** — forward-looking or time-bounded information (plans, temporary states, deadlines, scheduled events). For each, infer a reasonable validity interval:
-   - Temporary illness (flu, cold): ~1-2 weeks
-   - Medication course: duration mentioned or ~1-2 weeks
-   - Travel plans: specific dates if mentioned, include arrival/departure TIMES
-   - Deliveries/orders: use the mentioned ETA to set valid_until precisely (e.g., "15 min" from [11:16] → valid_until = YYYY-MM-DD 11:31)
-   - New job/move: indefinite (set valid_until to null)
+3. A list of **Foresight Signals** — forward-looking or time-bounded information. For each, infer a reasonable validity interval:
+   - Temporary illness: ~1-2 weeks
+   - Travel plans: specific dates
+   - Deliveries: precise ETA
+   - New job/move: indefinite (valid_until = null)
    - Deadlines: valid until the deadline date
-   - If no clear end, set valid_until to null (indefinite)
    If there are no foresight signals, return an empty array.
 
-4. A **Scene Hint** — a short theme label (2-4 words) and a one-sentence summary describing the overall memory scene this episode belongs to.
+4. A **Scene Hint** — a short theme label (2-4 words) and a one-sentence summary.
 
 **Conversation segment:**
 {segment}
@@ -55,7 +53,7 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
 Output as JSON:
 {
   "episode": "Third-person narrative here...",
-  "atomic_facts": ["Fact 1", "Fact 2"],
+  "atomic_facts": ["Caroline moved from Sweden approximately 4 years ago (around 2019).", "Melanie read the book 'Nothing is Impossible' in 2022.", "Caroline met with friends, family, and mentors in the week before June 9, 2023."],
   "foresight": [
     {
       "description": "What is expected to happen or is temporarily true",

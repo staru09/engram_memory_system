@@ -6,6 +6,8 @@ __pycache__
 *.pyc
 *.pdf
 .agent
-test/
+tests/
 db_backup/
 prod.env
+benchmark_results/
+benchmark/

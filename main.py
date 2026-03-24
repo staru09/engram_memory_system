@@ -188,14 +188,15 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
 
 
 def ingest_conversation(conversation: list[dict], source_id: str = "default",
-                        current_date: str = None, interactive: bool = False):
+                        current_date: str = None, interactive: bool = False,
+                        extract_all_speakers: bool = False):
     """Async ingestion pipeline: parallel extraction, batch embedding, two-phase storage."""
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))
         current_date = datetime.now(IST).strftime("%Y-%m-%d")
 
     print(f"[1/2] Segmenting conversation ({len(conversation)} turns)...")
-    segments = extract_segments(conversation)
+    segments = extract_segments(conversation, extract_all_speakers=extract_all_speakers)
     print(f"       Found {len(segments)} segments.")
 
     total_batches = (len(segments) + EXTRACTION_BATCH_SIZE - 1) // EXTRACTION_BATCH_SIZE
