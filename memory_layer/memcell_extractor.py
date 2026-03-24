@@ -42,9 +42,13 @@ def segment_conversation(conversation: list[dict]) -> list[dict]:
     return json.loads(text)
 
 
-def extract_segments(conversation: list[dict]) -> list[dict]:
+def extract_segments(conversation: list[dict], extract_all_speakers: bool = False) -> list[dict]:
     """
     Segment conversation and return the raw dialogue text for each segment.
+
+    Args:
+        extract_all_speakers: If True, treat all speakers equally (no [CONTEXT ONLY] tag).
+            Use for benchmarks like LoCoMo where both speakers are equal participants.
 
     Returns:
         List of {"segment_id": int, "topic_hint": str, "dialogue": str, "turns": list[dict]}
@@ -63,7 +67,7 @@ def extract_segments(conversation: list[dict]) -> list[dict]:
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 time_prefix = f"[{ts.astimezone(IST).strftime('%H:%M')}] "
-            if t['role'] == 'user':
+            if t['role'] == 'user' or extract_all_speakers:
                 return f"{time_prefix}{t['role']}: {t['content']}"
             else:
                 return f"{time_prefix}{t['role']} [CONTEXT ONLY]: {t['content']}"
