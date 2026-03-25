@@ -25,9 +25,9 @@ STORAGE_CONCURRENCY = 10
 _executor = ThreadPoolExecutor(max_workers=STORAGE_CONCURRENCY * 2)
 
 
-def _extract_segment(seg: dict, current_date: str) -> dict:
+def _extract_segment(seg: dict, current_date: str, prior_facts: list[str] = None) -> dict:
     """Extract episode, facts, foresight, and scene hint for one segment (single LLM call)."""
-    result = extract_episode(seg["dialogue"], current_date)
+    result = extract_episode(seg["dialogue"], current_date, prior_facts=prior_facts)
     return {
         "segment": seg,
         "episode_text": result["episode"],
@@ -187,10 +187,14 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
     return results
 
 
+_global_prior_facts = []  # cross-session accumulated episode summaries for reference resolution
+
+
 def ingest_conversation(conversation: list[dict], source_id: str = "default",
                         current_date: str = None, interactive: bool = False,
                         extract_all_speakers: bool = False):
     """Async ingestion pipeline: parallel extraction, batch embedding, two-phase storage."""
+    global _global_prior_facts
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))
         current_date = datetime.now(IST).strftime("%Y-%m-%d")
@@ -203,6 +207,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     print(f"\n[2/2] Processing {len(segments)} segments in {total_batches} batches (batch_size={EXTRACTION_BATCH_SIZE})...")
     pipeline_start = time.time()
     all_results = []
+    accumulated_episodes = list(_global_prior_facts)  # rolling episode summaries from prior sessions
 
     for batch_start in range(0, len(segments), EXTRACTION_BATCH_SIZE):
         batch_end = min(batch_start + EXTRACTION_BATCH_SIZE, len(segments))
@@ -214,14 +219,16 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
             time.sleep(BATCH_SLEEP)
 
         # Parallel extraction (one LLM call per segment, all in parallel)
+        # All segments in this batch share the same prior episode summaries
+        prior_episodes_snapshot = list(accumulated_episodes) if accumulated_episodes else None
         print(f"\n  ── Batch {batch_num}/{total_batches} ──")
-        print(f"       Extracting {len(batch)} segments in parallel...")
+        print(f"       Extracting {len(batch)} segments in parallel (prior episodes: {len(accumulated_episodes)})...")
         extract_start = time.time()
         batch_extractions = [None] * len(batch)
 
         with ThreadPoolExecutor(max_workers=EXTRACTION_BATCH_SIZE) as executor:
             future_to_idx = {
-                executor.submit(_extract_segment, seg, current_date): i
+                executor.submit(_extract_segment, seg, current_date, prior_episodes_snapshot): i
                 for i, seg in enumerate(batch)
             }
             for future in as_completed(future_to_idx):
@@ -230,6 +237,10 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
                 seg_info = batch_extractions[idx]
                 print(f"         Segment {batch_start+idx+1}: {seg_info['segment']['topic_hint']} "
                       f"({len(seg_info['atomic_facts'])} facts, {len(seg_info['foresight'])} foresight)")
+
+        # Accumulate episode summaries for next batch's context
+        for ext in batch_extractions:
+            accumulated_episodes.append(ext["episode_text"])
 
         print(f"       Extraction: {time.time() - extract_start:.1f}s")
 
@@ -247,6 +258,9 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         all_results.extend(batch_results)
         print(f"       Batch total: {time.time() - extract_start:.1f}s")
 
+    # Persist accumulated episodes for cross-session context
+    _global_prior_facts.extend(accumulated_episodes[len(_global_prior_facts):])
+
     print(f"\n       Pipeline complete in {time.time() - pipeline_start:.1f}s")
 
     # Update user profile from all active facts and scene summaries
@@ -262,6 +276,8 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
 def reset_databases():
     """Wipe and recreate all tables and Qdrant collections."""
+    global _global_prior_facts
+    _global_prior_facts = []
     print("Resetting databases...")
     conn = db.get_connection()
     cur = conn.cursor()

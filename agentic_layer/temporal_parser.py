@@ -170,26 +170,32 @@ def _rule_based_parse(query: str, today: datetime) -> dict | None:
         return {"date_from": _fmt(d_from), "date_to": _fmt(today), "is_mixed": False,
                 "reasoning": "This month"}
 
-    # Month name (e.g., "in March", "march me")
+    # Month name (e.g., "in March", "march me", "October 2023")
     m = _MONTH_NAME.search(query)
     if m:
         month_num = _MONTH_MAP[m.group(1).lower()]
-        # Assume current year, or last year if month is in the future
-        year = today.year
-        if month_num > today.month:
-            year -= 1
-        d_from = datetime(year, month_num, 1)
-        if month_num == 12:
-            d_to = datetime(year + 1, 1, 1) - timedelta(days=1)
-        else:
-            d_to = datetime(year, month_num + 1, 1) - timedelta(days=1)
-        # Clamp to today if same month
-        today_naive = today.replace(tzinfo=None) if today.tzinfo else today
-        d_to_naive = d_to.replace(tzinfo=None) if d_to.tzinfo else d_to
-        if d_to_naive > today_naive:
-            d_to = today
-        return {"date_from": _fmt(d_from), "date_to": _fmt(d_to), "is_mixed": False,
-                "reasoning": f"Month: {m.group(1)}"}
+
+        # Check for explicit 4-digit year alongside the month name
+        year_match = re.search(r'\b(20\d{2})\b', query)
+        if year_match:
+            year = int(year_match.group(1))
+            d_from = datetime(year, month_num, 1)
+            if month_num == 12:
+                d_to = datetime(year + 1, 1, 1) - timedelta(days=1)
+            else:
+                d_to = datetime(year, month_num + 1, 1) - timedelta(days=1)
+            today_naive = today.replace(tzinfo=None) if today.tzinfo else today
+            d_to_naive = d_to.replace(tzinfo=None) if d_to.tzinfo else d_to
+            if d_to_naive > today_naive:
+                d_to = today
+            return {"date_from": _fmt(d_from), "date_to": _fmt(d_to), "is_mixed": False,
+                    "reasoning": f"Month: {m.group(1)} Year: {year}"}
+
+        # No explicit year — fall through to LLM.
+        # Rule-based year inference (today.year ± 1) is unreliable when the
+        # conversation happened years in the past. The LLM, given the correct
+        # reference date, resolves correctly.
+        return None
 
     # "yesterday"
     if _YESTERDAY.search(query):
@@ -257,20 +263,23 @@ def _rule_based_parse(query: str, today: datetime) -> dict | None:
 
 _TEMPORAL_PROMPT = """You are a temporal expression resolver for a Hinglish (Hindi + English) chatbot.
 
-Current date/time (IST): {current_time_ist}
+Reference date/time (IST): {current_time_ist}
+This is the date to treat as "today" — it may be a past date if the conversation being queried is historical.
 
 User query: "{query}"
 
-Analyze the query and extract any temporal references. Resolve them to specific date ranges.
+Analyze the query and extract any temporal references. Resolve them to specific date ranges relative to the reference date above.
 
 Rules:
 - "kal" means "yesterday" if past tense (tha/thi/the), "tomorrow" if future tense (ga/gi/ge/na hai)
 - "parso" means 2 days ago (past) or 2 days from now (future), based on tense
-- "aaj" = today
-- "X din pehle" = X days ago
-- "pichle hafte" = last 7 days
-- "is hafte" = this week (Monday to today)
-- "pichle mahine" = last month
+- "aaj" = the reference date
+- "X din pehle" = X days before the reference date
+- "pichle hafte" = last 7 days before reference date
+- "is hafte" = this week (Monday to reference date)
+- "pichle mahine" = last calendar month before reference date
+- Month name only (e.g., "in July", "camping in July"): resolve to that month in the most likely year relative to the reference date. If the month has already passed in the reference year, use that year. If it is still upcoming in the reference year, use the prior year.
+- Month + explicit year (e.g., "October 2023"): use that exact year and full calendar month.
 - All dates should be in YYYY-MM-DD format
 - If the query has no temporal expression, return null
 - If the query asks about BOTH past and present/future, set is_mixed: true
