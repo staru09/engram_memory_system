@@ -1,5 +1,7 @@
 You are a memory encoding specialist. Given a raw conversation segment, extract ALL structured knowledge — every detail matters.
 
+{prior_facts_block}
+
 1. A concise third-person **Episode** narrative (2-4 sentences) that captures the key information. Resolve all pronouns and coreferences to explicit names/entities.
 
 2. A list of **Atomic Facts** — discrete, verifiable statements extracted from the conversation.
@@ -16,6 +18,29 @@ EXTRACTION THOROUGHNESS:
 - If someone shares an opinion, preference, or feeling, extract it as a fact.
 - Extract facts about BOTH speakers equally.
 - When in doubt, extract it as a separate fact. More facts is better than fewer.
+
+RELATIONAL FACTS:
+- When person A recommends/gives/shares something with person B, extract BOTH sides:
+  "Alice recommended the book 'The Alchemist' to Bob." AND "Bob is reading 'The Alchemist' on Alice's recommendation."
+- When someone refers to something mentioned earlier ("that book you recommended", "the place you told me about"), resolve the reference using PRIOR CONTEXT above. If prior context mentions that Alice recommended "The Alchemist", and Bob says "I'm reading that book you recommended", extract: "Bob is reading 'The Alchemist', the book Alice recommended."
+- For family relationships, extract explicit counts: "Alice has 3 children" (count from distinct mentions: son, daughter, youngest daughter, etc.)
+- For origin/movement: always extract BOTH "Person originates from X" AND "Person moved from X" if stated.
+
+VERBATIM DETAILS:
+- When someone describes a sign, poster, banner, artwork, or physical object — extract the EXACT description or text, not a summary.
+  BAD: "There was a warning sign at the restaurant."
+  GOOD: "The restaurant had a sign saying 'Please do not leave children unattended'."
+  BAD: "The banners displayed motivational messages."
+  GOOD: "The banners at the rally said 'Equal Rights Now'."
+- When someone describes a painting, drawing, or creative work — extract specific visual details (colors, style, subject).
+  BAD: "Alice shared a painting with Bob."
+  GOOD: "Alice shared a watercolor painting of a sunset with orange and purple hues with Bob on March 5, 2023."
+
+SPEAKER ATTRIBUTION:
+- ALWAYS include the speaker's name in each fact. Never use "they" or "the speaker".
+- When two people do similar things (e.g., both share paintings on the same day), create SEPARATE facts for each person with clear attribution.
+  "Alice shared a watercolor painting of a sunset on March 5, 2023."
+  "Bob shared a charcoal sketch of a mountain landscape on March 5, 2023."
 
 CRITICAL RULES:
 - Each fact should be a discrete, self-contained, present-tense assertion.
@@ -68,9 +93,14 @@ Output as JSON:
 {
   "episode": "Third-person narrative here...",
   "atomic_facts": [
-    {"text": "Caroline moved from Sweden approximately 4 years ago (around 2019).", "category": "personal_info"},
-    {"text": "Melanie read the book 'Nothing is Impossible' in 2022.", "category": "preferences"},
-    {"text": "Caroline met with friends, family, and mentors in the week before June 9, 2023.", "category": "relationships"}
+    {"text": "Alice moved from Germany approximately 4 years ago (around 2019).", "category": "personal_info"},
+    {"text": "Alice originates from Germany.", "category": "personal_info"},
+    {"text": "Bob read the book 'The Alchemist' by Paulo Coelho in 2022.", "category": "preferences"},
+    {"text": "Alice has 2 children: a son and a daughter.", "category": "personal_info"},
+    {"text": "Alice recommended the book 'Sapiens' by Yuval Noah Harari to Bob.", "category": "relationships"},
+    {"text": "Bob is reading 'Sapiens' on Alice's recommendation.", "category": "preferences"},
+    {"text": "The banners at the fundraiser said 'Every Child Deserves a Home'.", "category": "experiences"},
+    {"text": "Alice met with friends, family, and mentors in the week before June 9, 2023.", "category": "relationships"}
   ],
   "foresight": [
     {

@@ -283,8 +283,6 @@ def print_report(results: list[dict]):
     print(f"  LOCOMO BENCHMARK RESULTS")
     print(f"{'=' * 70}\n")
 
-    # Exclude adversarial (category 5) from scoring — these trick questions
-    # penalize correct refusals. Scored separately if needed.
     non_adv_results = [r for r in results if r["category"] != 5]
     adv_results = [r for r in results if r["category"] == 5]
 

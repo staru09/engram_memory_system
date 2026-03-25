@@ -25,7 +25,7 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 SCENE_SIMILARITY_THRESHOLD = float(os.getenv("SCENE_SIMILARITY_THRESHOLD", "0.75"))
 
 # Retrieval
-RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "15"))
+RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "10"))
 SCENE_TOP_N = int(os.getenv("SCENE_TOP_N", "5"))
 RRF_K = int(os.getenv("RRF_K", "60"))  # RRF constant
 RRF_KEYWORD_WEIGHT = float(os.getenv("RRF_KEYWORD_WEIGHT", "1.5"))
