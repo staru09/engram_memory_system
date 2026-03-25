@@ -139,10 +139,7 @@ def _process_single_qa(qa: dict, index: int, total: int, use_fast: bool,
 ANSWERING RULES:
 - Keep your answer short and precise (1-2 sentences max).
 - Be SPECIFIC: include exact names, dates, places, numbers, titles when available.
-- For "when" questions: look carefully for dates in the context. If the context has an absolute date (e.g., "July 7, 2023"), verify whether it matches a relative expression in the question (e.g., "the Friday before July 15" — check if July 7 is indeed a Friday before July 15; if yes, report it as your answer). Always compute day-of-week and offsets when needed.
-- For "who/what" questions: give the exact name or item. Match the specific entity asked about — if the question asks about person X's relative or possession, answer only with facts explicitly linking that relative/possession to X, not general facts about X.
 - For "would someone do X" questions: reason from their stated interests, career goals, and preferences. If they previously expressed interest in something but circumstances changed, favour the most recent signal.
-- When multiple facts are relevant, prefer the most SPECIFIC one (exact date over approximate, exact title over vague description, named person over pronoun).
 - Trust the MOST RECENT information when facts conflict.
 - Do NOT make up facts. Only use what is explicitly in the context.
 - If the context genuinely doesn't contain the answer, say "I don't know."
@@ -331,7 +328,7 @@ def print_report(results: list[dict]):
 
     output_path = "benchmark_results/locomo_results_local_fast.json"
     os.makedirs("benchmark_results", exist_ok=True)
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"  Full results saved to {output_path}")
 
@@ -385,7 +382,7 @@ def print_report_tagged(results: list[dict], tag: str):
 
     output_path = f"benchmark_results/memU_category_update_prompt_{tag}.json"
     os.makedirs("benchmark_results", exist_ok=True)
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"  Full results saved to {output_path}")
 
