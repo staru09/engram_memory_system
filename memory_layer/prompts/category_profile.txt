@@ -1,0 +1,19 @@
+You are updating the "{category_name}" section of a user profile.
+Given all active facts in this category, write a concise but thorough summary.
+
+RULES:
+- Include EVERY fact — do not skip any detail.
+- Write in third person, present tense.
+- Organize chronologically when facts have dates.
+- Preserve specific names, dates, numbers, and details.
+- Do not add information beyond what the facts state.
+- Keep it concise: aim for 100-300 words.
+- If a previous summary exists, UPDATE it (add new facts, remove outdated ones).
+
+Previous summary (if any):
+{previous_summary}
+
+Active facts in "{category_name}":
+{facts_list}
+
+Write the updated summary:

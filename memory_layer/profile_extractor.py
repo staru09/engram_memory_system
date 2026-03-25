@@ -4,14 +4,21 @@ from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
 from models import UserProfile
 import db
+from agentic_layer.vectorize_service import embed_text
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "profile_extraction.txt")
+_CATEGORY_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "category_profile.txt")
 
 
 def _load_prompt():
     with open(_PROMPT_PATH) as f:
+        return f.read()
+
+
+def _load_category_prompt():
+    with open(_CATEGORY_PROMPT_PATH) as f:
         return f.read()
 
 
@@ -67,3 +74,38 @@ def update_user_profile():
 
     print(f"       Profile updated: {len(profile.explicit_facts)} explicit facts, {len(profile.implicit_traits)} implicit traits")
     return profile
+
+
+def update_category_profiles(affected_categories: set[str] = None):
+    """Rebuild profile sections for affected categories only.
+
+    If affected_categories is None, rebuild all non-empty categories.
+    """
+    if affected_categories is None:
+        affected_categories = db.get_categories_with_facts()
+
+    prompt_template = _load_category_prompt()
+    updated = 0
+
+    for cat_name in affected_categories:
+        facts = db.get_active_facts_by_category(cat_name)
+        if not facts:
+            continue
+
+        existing = db.get_profile_category(cat_name)
+        prev_summary = existing["summary_text"] if existing and existing.get("summary_text") else "None (first time)"
+
+        facts_text = "\n".join(f"- {f['fact_text']}" for f in facts)
+        prompt = prompt_template.replace("{category_name}", cat_name).replace(
+            "{previous_summary}", prev_summary
+        ).replace("{facts_list}", facts_text)
+
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        summary = response.text.strip()
+
+        summary_embedding = embed_text(summary)
+        db.upsert_profile_category(cat_name, summary, len(facts), summary_embedding)
+        updated += 1
+        print(f"       [{cat_name}] {len(facts)} facts → {len(summary)} chars")
+
+    print(f"       Category profiles updated: {updated}/{len(affected_categories)} categories")

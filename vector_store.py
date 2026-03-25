@@ -43,11 +43,13 @@ def _date_to_int(date_str: str) -> int:
 
 
 def upsert_fact(fact_id: int, memcell_id: int, embedding: list[float],
-                conversation_date: str = None):
+                conversation_date: str = None, category_name: str = None):
     client = get_client()
     payload = {"fact_id": fact_id, "memcell_id": memcell_id}
     if conversation_date:
         payload["conversation_date"] = _date_to_int(conversation_date)
+    if category_name:
+        payload["category_name"] = category_name
     client.upsert(
         collection_name="facts",
         points=[

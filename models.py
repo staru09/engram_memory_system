@@ -8,10 +8,23 @@ class AtomicFact:
     id: Optional[int] = None
     memcell_id: Optional[int] = None
     fact_text: str = ""
+    category_name: str = "general"
     is_active: bool = True
     created_at: Optional[datetime] = None
     conversation_date: Optional[str] = None
     superseded_on: Optional[str] = None
+
+
+@dataclass
+class ProfileCategory:
+    id: Optional[int] = None
+    category_name: str = ""
+    description: str = ""
+    summary_text: str = ""
+    fact_count: int = 0
+    embedding: Optional[list[float]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 
 @dataclass

@@ -60,23 +60,38 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
                        source_id=source_id, conversation_date=current_date)
         memcell_id = await loop.run_in_executor(_executor, db.insert_memcell, cell)
 
+        # Parse fact items (support both string and dict format)
+        parsed_facts = []
+        for fact_item in atomic_facts:
+            if isinstance(fact_item, dict):
+                parsed_facts.append({
+                    "text": fact_item.get("text", ""),
+                    "category": fact_item.get("category", "general"),
+                })
+            else:
+                parsed_facts.append({"text": fact_item, "category": "general"})
+
+        fact_texts = [f["text"] for f in parsed_facts]
+
         # Batch-embed all facts
-        if atomic_facts:
-            embeddings = await loop.run_in_executor(_executor, embed_texts, atomic_facts)
+        if fact_texts:
+            embeddings = await loop.run_in_executor(_executor, embed_texts, fact_texts)
         else:
             embeddings = []
 
         # Insert facts into PostgreSQL
         fact_ids = []
-        for fact_text in atomic_facts:
-            fact = AtomicFact(memcell_id=memcell_id, fact_text=fact_text, conversation_date=current_date)
+        for pf in parsed_facts:
+            fact = AtomicFact(memcell_id=memcell_id, fact_text=pf["text"],
+                              category_name=pf["category"], conversation_date=current_date)
             fact_id = await loop.run_in_executor(_executor, db.insert_atomic_fact, fact)
             fact_ids.append(fact_id)
 
         # Upsert vectors into Qdrant
-        for fact_id, embedding in zip(fact_ids, embeddings):
+        for fact_id, pf, embedding in zip(fact_ids, parsed_facts, embeddings):
             await loop.run_in_executor(
-                _executor, vector_store.upsert_fact, fact_id, memcell_id, embedding, current_date
+                _executor, vector_store.upsert_fact, fact_id, memcell_id, embedding,
+                current_date, pf["category"]
             )
 
         # Store episode embedding in memcells table
@@ -132,6 +147,7 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
             "seg_label": seg_label,
             "fact_ids": fact_ids,
             "atomic_facts": atomic_facts,
+            "parsed_facts": parsed_facts,
             "embeddings": embeddings,
         }
 
@@ -158,9 +174,10 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
     total_conflicts = 0
     conflict_counts = []
     for p1 in phase1_results:
+        fact_texts = [pf["text"] for pf in p1["parsed_facts"]]
         facts_with_embeddings = [
             {"fact_id": fid, "fact_text": ft, "embedding": emb}
-            for fid, ft, emb in zip(p1["fact_ids"], p1["atomic_facts"], p1["embeddings"])
+            for fid, ft, emb in zip(p1["fact_ids"], fact_texts, p1["embeddings"])
         ]
         seg_conflicts = await loop.run_in_executor(
             _executor, detect_conflicts_batch, facts_with_embeddings, interactive, current_date
@@ -182,6 +199,7 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
             "scene_id": p1["scene_id"],
             "facts": len(p1["atomic_facts"]),
             "conflicts": seg_conflicts,
+            "parsed_facts": p1.get("parsed_facts", []),
         })
 
     return results
@@ -253,6 +271,18 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     print(f"\n[Profile] Updating user profile...")
     update_user_profile()
 
+    # Update category profiles for affected categories
+    from memory_layer.profile_extractor import update_category_profiles
+    from agentic_layer.fetch_mem_service import invalidate_category_cache
+    affected_categories = set()
+    for r in all_results:
+        for pf in r.get("parsed_facts", []):
+            affected_categories.add(pf.get("category", "general"))
+    if affected_categories:
+        print(f"\n[Categories] Updating {len(affected_categories)} category profiles...")
+        update_category_profiles(affected_categories)
+        invalidate_category_cache()
+
     total_memcells = len(all_results)
     total_conflicts = sum(r["conflicts"] for r in all_results)
     print(f"\nDone. Ingested {total_memcells} MemCells, {total_conflicts} conflicts detected.")
@@ -266,6 +296,7 @@ def reset_databases():
     conn = db.get_connection()
     cur = conn.cursor()
     cur.execute("""
+        DROP TABLE IF EXISTS profile_categories CASCADE;
         DROP TABLE IF EXISTS conflicts CASCADE;
         DROP TABLE IF EXISTS foresight CASCADE;
         DROP TABLE IF EXISTS atomic_facts CASCADE;

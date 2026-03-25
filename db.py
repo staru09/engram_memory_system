@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
-from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog
+from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog, ProfileCategory
 
 _pool = None
 
@@ -72,6 +72,7 @@ def init_schema():
             memcell_id      INTEGER REFERENCES memcells(id),
             fact_text       TEXT NOT NULL,
             fact_tsv        TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', fact_text)) STORED,
+            category_name   VARCHAR(100) DEFAULT 'general',
             is_active       BOOLEAN DEFAULT TRUE,
             created_at      TIMESTAMP DEFAULT NOW(),
             conversation_date DATE,
@@ -134,10 +135,37 @@ def init_schema():
             created_at          TIMESTAMP DEFAULT NOW(),
             query_time          TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS profile_categories (
+            id              SERIAL PRIMARY KEY,
+            category_name   VARCHAR(100) NOT NULL UNIQUE,
+            description     TEXT DEFAULT '',
+            summary_text    TEXT NOT NULL DEFAULT '',
+            fact_count      INTEGER DEFAULT 0,
+            embedding       FLOAT8[],
+            created_at      TIMESTAMP DEFAULT NOW(),
+            updated_at      TIMESTAMP DEFAULT NOW()
+        );
     """)
     conn.commit()
     cur.close()
+
+    # Migrate: add category_name column to existing atomic_facts table if missing
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'atomic_facts' AND column_name = 'category_name'
+    """)
+    if not cur.fetchone():
+        cur.execute("ALTER TABLE atomic_facts ADD COLUMN category_name VARCHAR(100) DEFAULT 'general'")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_facts_category ON atomic_facts (category_name)")
+        conn.commit()
+
+    cur.close()
     release_connection(conn)
+
+    # Seed default categories
+    seed_default_categories()
 
 
 # ── MemScene CRUD ──
@@ -224,8 +252,8 @@ def insert_atomic_fact(fact: AtomicFact) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO atomic_facts (memcell_id, fact_text, is_active, conversation_date) VALUES (%s, %s, %s, %s) RETURNING id",
-        (fact.memcell_id, fact.fact_text, fact.is_active, fact.conversation_date)
+        "INSERT INTO atomic_facts (memcell_id, fact_text, category_name, is_active, conversation_date) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (fact.memcell_id, fact.fact_text, fact.category_name, fact.is_active, fact.conversation_date)
     )
     fact_id = cur.fetchone()[0]
     conn.commit()
@@ -464,6 +492,151 @@ def get_user_profile() -> UserProfile | None:
         implicit_traits=row["implicit_traits"],
         updated_at=row["updated_at"]
     )
+
+
+
+# ── Profile Categories ──────────────────────────────────────────────────────
+
+DEFAULT_CATEGORIES = [
+    ("personal_info", "Name, age, gender, nationality, origin, identity"),
+    ("preferences", "Likes, dislikes, favorites (food, books, music, etc.)"),
+    ("relationships", "Family, friends, partners, social connections"),
+    ("activities", "Hobbies, sports, creative pursuits, regular activities"),
+    ("goals", "Future plans, aspirations, deadlines, intentions"),
+    ("experiences", "Past events, trips, milestones, achievements"),
+    ("knowledge", "Skills, expertise, education, certifications"),
+    ("opinions", "Views, beliefs, attitudes, reactions"),
+    ("habits", "Routines, patterns, lifestyle choices, health"),
+    ("work_life", "Career, job, professional development, workplace"),
+]
+
+
+def seed_default_categories():
+    """Insert default categories if they don't already exist."""
+    conn = get_connection()
+    cur = conn.cursor()
+    for name, desc in DEFAULT_CATEGORIES:
+        cur.execute(
+            """INSERT INTO profile_categories (category_name, description)
+               VALUES (%s, %s) ON CONFLICT (category_name) DO NOTHING""",
+            (name, desc)
+        )
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+
+
+def get_profile_category(category_name: str) -> dict | None:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM profile_categories WHERE category_name = %s", (category_name,))
+    row = cur.fetchone()
+    cur.close()
+    release_connection(conn)
+    return dict(row) if row else None
+
+
+def get_profile_categories(category_names: list[str]) -> list[dict]:
+    """Fetch profile category summaries by name."""
+    if not category_names:
+        return []
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        """SELECT category_name, summary_text, fact_count
+           FROM profile_categories
+           WHERE category_name = ANY(%s) AND summary_text != ''""",
+        (category_names,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def get_all_category_embeddings() -> list[dict]:
+    """Fetch all category embeddings for in-memory cache (used by retrieval)."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT category_name, embedding FROM profile_categories WHERE embedding IS NOT NULL"
+    )
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def upsert_profile_category(category_name: str, summary_text: str,
+                             fact_count: int, embedding: list[float] = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO profile_categories (category_name, summary_text, fact_count, embedding)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (category_name) DO UPDATE SET
+             summary_text = EXCLUDED.summary_text,
+             fact_count = EXCLUDED.fact_count,
+             embedding = EXCLUDED.embedding,
+             updated_at = NOW()""",
+        (category_name, summary_text, fact_count, embedding)
+    )
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+
+
+def get_active_facts_by_category(category_name: str) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        """SELECT id, fact_text, conversation_date
+           FROM atomic_facts
+           WHERE category_name = %s AND is_active = TRUE
+           ORDER BY conversation_date DESC""",
+        (category_name,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def get_categories_with_facts() -> list[str]:
+    """Return category names that have at least one active fact."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT DISTINCT category_name FROM atomic_facts
+           WHERE is_active = TRUE AND category_name IS NOT NULL"""
+    )
+    result = [row[0] for row in cur.fetchall()]
+    cur.close()
+    release_connection(conn)
+    return result
+
+
+def get_or_create_category(category_name: str, description: str = "") -> dict:
+    """Get existing category or create a new one."""
+    existing = get_profile_category(category_name)
+    if existing:
+        return existing
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        """INSERT INTO profile_categories (category_name, description)
+           VALUES (%s, %s)
+           ON CONFLICT (category_name) DO NOTHING
+           RETURNING *""",
+        (category_name, description)
+    )
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    if row:
+        return dict(row)
+    return get_profile_category(category_name)
 
 
 def get_memcell_by_id(memcell_id: int) -> dict | None:

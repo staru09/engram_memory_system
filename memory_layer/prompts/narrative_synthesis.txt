@@ -24,6 +24,20 @@ CRITICAL RULES:
 - NEVER escalate frequency. Mentioning something once does NOT make it a habit.
 - Preserve action context: "likes to visit X", "ordered from Y", "travelled to Z".
 
+CATEGORY ASSIGNMENT:
+For each atomic fact, assign a category from this list:
+- personal_info: Name, age, gender, nationality, origin, identity
+- preferences: Likes, dislikes, favorites (food, books, music, etc.)
+- relationships: Family, friends, partners, social connections
+- activities: Hobbies, sports, creative pursuits, regular activities
+- goals: Future plans, aspirations, deadlines, intentions
+- experiences: Past events, trips, milestones, achievements
+- knowledge: Skills, expertise, education, certifications
+- opinions: Views, beliefs, attitudes, reactions
+- habits: Routines, patterns, lifestyle choices, health
+- work_life: Career, job, professional development, workplace
+Choose the MOST SPECIFIC matching category. If none fit, use "general".
+
 SOURCE ATTRIBUTION RULE:
 - Extract Atomic Facts and Foresight Signals from ALL speakers in the conversation.
 - Both participants are equal sources of facts.
@@ -53,7 +67,11 @@ TEMPORAL PRECISION:
 Output as JSON:
 {
   "episode": "Third-person narrative here...",
-  "atomic_facts": ["Caroline moved from Sweden approximately 4 years ago (around 2019).", "Melanie read the book 'Nothing is Impossible' in 2022.", "Caroline met with friends, family, and mentors in the week before June 9, 2023."],
+  "atomic_facts": [
+    {"text": "Caroline moved from Sweden approximately 4 years ago (around 2019).", "category": "personal_info"},
+    {"text": "Melanie read the book 'Nothing is Impossible' in 2022.", "category": "preferences"},
+    {"text": "Caroline met with friends, family, and mentors in the week before June 9, 2023.", "category": "relationships"}
+  ],
   "foresight": [
     {
       "description": "What is expected to happen or is temporarily true",
