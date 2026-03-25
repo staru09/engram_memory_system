@@ -11,3 +11,4 @@ tests/
 db_backup/
 prod.env
 scripts/
+benchmark/
