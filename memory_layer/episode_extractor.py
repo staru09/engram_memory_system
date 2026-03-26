@@ -15,7 +15,7 @@ def _load_prompt():
 
 
 def extract_episode(segment_dialogue: str, current_date: str = None,
-                    prior_facts: list[str] = None) -> dict:
+                    conversation_summary: str = None) -> dict:
     """
     Given raw dialogue from a segment, produce Episode + Atomic Facts + Foresight + Scene Hint
     in a single LLM call.
@@ -23,29 +23,29 @@ def extract_episode(segment_dialogue: str, current_date: str = None,
     Args:
         segment_dialogue: Raw dialogue text from the segment.
         current_date: Date context for temporal anchoring.
-        prior_facts: List of fact strings from previously extracted segments,
-                     used for cross-reference resolution (e.g., "that book you recommended").
+        conversation_summary: Rolling summary of the full conversation history,
+                              used for cross-reference resolution.
 
     Returns:
-        {"episode": str, "atomic_facts": list[str], "foresight": list[dict], "scene_hint": dict}
+        {"episode": str, "atomic_facts": list[dict], "foresight": list[dict], "scene_hint": dict}
     """
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))
         current_date = datetime.now(IST).strftime("%Y-%m-%d")
 
-    # Build prior context block from episode summaries
-    if prior_facts:
-        summaries = "\n".join(f"- {s}" for s in prior_facts[-20:])  # last 20 episode summaries
-        prior_block = (
-            "PRIOR CONTEXT (episode summaries from earlier in this conversation — use these to resolve "
-            "references like 'that book you recommended', 'the place you mentioned', etc.):\n"
-            f"{summaries}"
+    # Build conversation summary block
+    if conversation_summary:
+        summary_block = (
+            "CONVERSATION SUMMARY (compressed history of everything before this segment — "
+            "use this to resolve references like 'that book you recommended', "
+            "'the place you mentioned', etc.):\n"
+            f"{conversation_summary}"
         )
     else:
-        prior_block = ""
+        summary_block = ""
 
     prompt = (_load_prompt()
-              .replace("{prior_facts_block}", prior_block)
+              .replace("{conversation_summary_block}", summary_block)
               .replace("{segment}", segment_dialogue)
               .replace("{current_date}", current_date))
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)

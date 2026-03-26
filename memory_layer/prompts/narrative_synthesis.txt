@@ -1,6 +1,11 @@
 You are a memory encoding specialist. Given a raw conversation segment, extract ALL structured knowledge — every detail matters.
 
-{prior_facts_block}
+{conversation_summary_block}
+
+DENSITY FILTER:
+- If the conversation segment contains ONLY greetings, small talk, confirmations, or social filler with NO new factual information, return an empty atomic_facts array.
+- Do NOT extract facts from "hi, how are you", "that's great!", "yeah totally", "see you later" etc.
+- If a segment mixes small talk with real information, extract ONLY the informative parts.
 
 1. A concise third-person **Episode** narrative (2-4 sentences) that captures the key information. Resolve all pronouns and coreferences to explicit names/entities.
 

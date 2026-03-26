@@ -24,10 +24,12 @@ STORAGE_CONCURRENCY = 10
 
 _executor = ThreadPoolExecutor(max_workers=STORAGE_CONCURRENCY * 2)
 
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-def _extract_segment(seg: dict, current_date: str, prior_facts: list[str] = None) -> dict:
+
+def _extract_segment(seg: dict, current_date: str, conversation_summary: str = None) -> dict:
     """Extract episode, facts, foresight, and scene hint for one segment (single LLM call)."""
-    result = extract_episode(seg["dialogue"], current_date, prior_facts=prior_facts)
+    result = extract_episode(seg["dialogue"], current_date, conversation_summary=conversation_summary)
     return {
         "segment": seg,
         "episode_text": result["episode"],
@@ -35,6 +37,95 @@ def _extract_segment(seg: dict, current_date: str, prior_facts: list[str] = None
         "foresight": result.get("foresight", []),
         "scene_hint": result.get("scene_hint"),
     }
+
+
+def _rebuild_conversation_summary(new_episodes: list[str], current_date: str):
+    """Rebuild the rolling conversation summary after ingesting new episodes."""
+    existing_summary = db.get_conversation_summary()
+
+    if not new_episodes:
+        return
+
+    episodes_text = "\n".join(f"- {ep}" for ep in new_episodes)
+
+    if existing_summary:
+        prompt = f"""You are maintaining a rolling summary of a long-term conversation between two people.
+
+EXISTING SUMMARY:
+{existing_summary}
+
+NEW EPISODES (from session dated {current_date}):
+{episodes_text}
+
+Update the summary to incorporate the new episodes. Keep it concise (10-15 sentences max).
+Focus on: key facts about each person, their relationship, ongoing plans, recent events, and any changes.
+Drop details that are no longer relevant (cancelled plans, resolved issues).
+
+Return ONLY the updated summary text, no JSON or formatting."""
+    else:
+        prompt = f"""You are creating a summary of a conversation between two people.
+
+EPISODES (from session dated {current_date}):
+{episodes_text}
+
+Write a concise summary (10-15 sentences max).
+Focus on: key facts about each person, their relationship, plans, events, and preferences.
+
+Return ONLY the summary text, no JSON or formatting."""
+
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        summary = response.text.strip()
+        db.upsert_conversation_summary(summary)
+        print(f"  [summary] Updated ({len(summary)} chars)")
+    except Exception as e:
+        print(f"  [summary] Update failed: {e}")
+
+
+def _consolidate_facts(facts: list[dict]) -> list[dict]:
+    """Consolidate related facts within a session into denser entries (I3).
+    Merges fragments like 'likes coffee' + 'prefers oat milk' → single entry."""
+    if len(facts) <= 3:
+        return facts  # too few to consolidate
+
+    facts_text = "\n".join(f"- {f['text'] if isinstance(f, dict) else f}" for f in facts)
+
+    prompt = f"""Given these extracted facts from one conversation session, merge closely related
+facts into unified entries. Keep facts that cover distinct topics separate.
+
+FACTS:
+{facts_text}
+
+Rules:
+- Merge facts about the SAME topic/entity into a single comprehensive fact
+  Example: "Alice likes coffee" + "Alice prefers oat milk" + "Alice likes it hot"
+  → "Alice prefers hot coffee with oat milk."
+- Keep facts about DIFFERENT topics separate
+  Example: "Alice likes coffee" + "Alice went hiking" → keep as 2 separate facts
+- Never lose specific details (dates, names, numbers, places) during merging
+- Each merged fact must still be a self-contained assertion
+- Preserve the category from the most specific original fact
+
+Output as JSON array:
+[{{"text": "merged fact", "category": "category_name"}}]
+
+Return ONLY the JSON array."""
+
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]
+            if text.endswith("```"):
+                text = text[:-3]
+        consolidated = json.loads(text)
+        if isinstance(consolidated, list) and len(consolidated) > 0:
+            print(f"  [consolidate] {len(facts)} facts -> {len(consolidated)} consolidated")
+            return consolidated
+    except Exception as e:
+        print(f"  [consolidate] Failed ({e}), using original facts")
+
+    return facts
 
 
 async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list[float],
@@ -205,27 +296,27 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
     return results
 
 
-_global_prior_facts = []  # cross-session accumulated facts for reference resolution
-
-
 def ingest_conversation(conversation: list[dict], source_id: str = "default",
                         current_date: str = None, interactive: bool = False,
                         extract_all_speakers: bool = False):
     """Async ingestion pipeline: parallel extraction, batch embedding, two-phase storage."""
-    global _global_prior_facts
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))
         current_date = datetime.now(IST).strftime("%Y-%m-%d")
 
-    print(f"[1/2] Segmenting conversation ({len(conversation)} turns)...")
+    print(f"[segment] Segmenting conversation ({len(conversation)} turns)...")
     segments = extract_segments(conversation, extract_all_speakers=extract_all_speakers)
-    print(f"       Found {len(segments)} segments.")
+    print(f"  Found {len(segments)} segments.")
+
+    # Fetch conversation summary once — shared by all segments in this session
+    conv_summary = db.get_conversation_summary()
+    if conv_summary:
+        print(f"[context] Using conversation summary ({len(conv_summary)} chars)")
 
     total_batches = (len(segments) + EXTRACTION_BATCH_SIZE - 1) // EXTRACTION_BATCH_SIZE
-    print(f"\n[2/2] Processing {len(segments)} segments in {total_batches} batches (batch_size={EXTRACTION_BATCH_SIZE})...")
     pipeline_start = time.time()
     all_results = []
-    accumulated_episodes = list(_global_prior_facts)  # rolling episode summaries from prior sessions
+    all_new_episodes = []
 
     for batch_start in range(0, len(segments), EXTRACTION_BATCH_SIZE):
         batch_end = min(batch_start + EXTRACTION_BATCH_SIZE, len(segments))
@@ -236,29 +327,31 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
             print(f"\n       Sleeping {BATCH_SLEEP}s between batches...")
             time.sleep(BATCH_SLEEP)
 
-        # Parallel extraction (one LLM call per segment, all in parallel)
-        # All segments in this batch share the same prior episode summaries
-        prior_episodes_snapshot = list(accumulated_episodes) if accumulated_episodes else None
-        print(f"\n  ── Batch {batch_num}/{total_batches} ──")
-        print(f"       Extracting {len(batch)} segments in parallel (prior episodes: {len(accumulated_episodes)})...")
+        # Parallel extraction with conversation summary context
+        print(f"\n  -- Batch {batch_num}/{total_batches} --")
+        print(f"  [extract] {len(batch)} segments in parallel...")
         extract_start = time.time()
         batch_extractions = [None] * len(batch)
 
         with ThreadPoolExecutor(max_workers=EXTRACTION_BATCH_SIZE) as executor:
             future_to_idx = {
-                executor.submit(_extract_segment, seg, current_date, prior_episodes_snapshot): i
+                executor.submit(_extract_segment, seg, current_date, conv_summary): i
                 for i, seg in enumerate(batch)
             }
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 batch_extractions[idx] = future.result()
                 seg_info = batch_extractions[idx]
-                print(f"         Segment {batch_start+idx+1}: {seg_info['segment']['topic_hint']} "
+                print(f"    {seg_info['segment']['topic_hint']} "
                       f"({len(seg_info['atomic_facts'])} facts, {len(seg_info['foresight'])} foresight)")
 
-        # Accumulate episode summaries for next batch's context
+        # Collect episode texts for summary rebuild
         for ext in batch_extractions:
-            accumulated_episodes.append(ext["episode_text"])
+            all_new_episodes.append(ext["episode_text"])
+
+        # I3: Consolidate related facts within this batch before storing
+        for ext in batch_extractions:
+            ext["atomic_facts"] = _consolidate_facts(ext["atomic_facts"])
 
         print(f"       Extraction: {time.time() - extract_start:.1f}s")
 
@@ -276,13 +369,14 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         all_results.extend(batch_results)
         print(f"       Batch total: {time.time() - extract_start:.1f}s")
 
-    # Persist accumulated episodes for cross-session context
-    _global_prior_facts.extend(accumulated_episodes[len(_global_prior_facts):])
+    print(f"\n  Pipeline complete in {time.time() - pipeline_start:.1f}s")
 
-    print(f"\n       Pipeline complete in {time.time() - pipeline_start:.1f}s")
+    # Rebuild conversation summary with new episodes
+    print(f"\n[summary] Rebuilding conversation summary...")
+    _rebuild_conversation_summary(all_new_episodes, current_date)
 
     # Update user profile from all active facts and scene summaries
-    print(f"\n[Profile] Updating user profile...")
+    print(f"\n[profile] Updating user profile...")
     update_user_profile()
 
     # Update category profiles for affected categories
@@ -306,8 +400,6 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
 def reset_databases():
     """Wipe and recreate all tables and Qdrant collections."""
-    global _global_prior_facts
-    _global_prior_facts = []
     print("Resetting databases...")
     conn = db.get_connection()
     cur = conn.cursor()
