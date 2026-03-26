@@ -14,10 +14,17 @@ def _load_prompt():
         return f.read()
 
 
-def extract_episode(segment_dialogue: str, current_date: str = None) -> dict:
+def extract_episode(segment_dialogue: str, current_date: str = None,
+                    conversation_summary: str = None, prior_facts: list[str] = None) -> dict:
     """
     Given raw dialogue from a segment, produce Episode + Atomic Facts + Foresight + Scene Hint
     in a single LLM call.
+
+    Args:
+        segment_dialogue: Raw dialogue text from the segment.
+        current_date: Date context for temporal anchoring.
+        conversation_summary: Rolling summary of the entire conversation so far.
+        prior_facts: (Deprecated) List of episode summaries — use conversation_summary instead.
 
     Returns:
         {"episode": str, "atomic_facts": list[str], "foresight": list[dict], "scene_hint": dict}
@@ -26,7 +33,27 @@ def extract_episode(segment_dialogue: str, current_date: str = None) -> dict:
         IST = timezone(timedelta(hours=5, minutes=30))
         current_date = datetime.now(IST).strftime("%Y-%m-%d")
 
-    prompt = _load_prompt().replace("{segment}", segment_dialogue).replace("{current_date}", current_date)
+    # Build conversation summary block (replaces prior episode summaries)
+    if conversation_summary:
+        summary_block = (
+            "CONVERSATION SUMMARY (compressed history of everything before this segment — "
+            "use to resolve references like 'that book you recommended', 'the place you mentioned', etc.):\n"
+            f"{conversation_summary}"
+        )
+    elif prior_facts:
+        # Fallback: use prior episode summaries if no conversation summary available
+        summaries = "\n".join(f"- {s}" for s in prior_facts[-20:])
+        summary_block = (
+            "PRIOR CONTEXT (episode summaries from earlier):\n"
+            f"{summaries}"
+        )
+    else:
+        summary_block = ""
+
+    prompt = (_load_prompt()
+              .replace("{prior_facts_block}", summary_block)
+              .replace("{segment}", segment_dialogue)
+              .replace("{current_date}", current_date))
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
 
     text = response.text.strip()

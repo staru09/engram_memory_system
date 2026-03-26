@@ -151,6 +151,13 @@ def init_schema():
             update_type     VARCHAR(50),
             created_at      TIMESTAMP DEFAULT NOW()
         );
+
+        -- Conversation summaries (rolling summary for extraction context)
+        CREATE TABLE IF NOT EXISTS conversation_summaries (
+            id              SERIAL PRIMARY KEY,
+            summary_text    TEXT NOT NULL DEFAULT '',
+            updated_at      TIMESTAMP DEFAULT NOW()
+        );
     """)
     conn.commit()
     cur.close()
@@ -832,3 +839,37 @@ def get_system_stats() -> dict:
         "active_facts": active_facts,
         "total_facts": total_facts,
     }
+
+
+# ── Conversation Summaries ──
+
+def get_conversation_summary() -> str | None:
+    """Fetch the current rolling conversation summary."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT summary_text FROM conversation_summaries ORDER BY updated_at DESC LIMIT 1")
+    row = cur.fetchone()
+    cur.close()
+    release_connection(conn)
+    return row[0] if row else None
+
+
+def upsert_conversation_summary(summary_text: str):
+    """Insert or update the rolling conversation summary."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM conversation_summaries LIMIT 1")
+    row = cur.fetchone()
+    if row:
+        cur.execute(
+            "UPDATE conversation_summaries SET summary_text = %s, updated_at = NOW() WHERE id = %s",
+            (summary_text, row[0])
+        )
+    else:
+        cur.execute(
+            "INSERT INTO conversation_summaries (summary_text) VALUES (%s)",
+            (summary_text,)
+        )
+    conn.commit()
+    cur.close()
+    release_connection(conn)

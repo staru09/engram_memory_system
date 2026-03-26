@@ -10,7 +10,7 @@ GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-0
 
 # PostgreSQL
 PG_HOST = os.getenv("PG_HOST", "localhost")
-PG_PORT = int(os.getenv("PG_PORT", "54345"))
+PG_PORT = int(os.getenv("PG_PORT", "55432"))
 PG_USER = os.getenv("PG_USER", "evermemos")
 PG_PASSWORD = os.getenv("PG_PASSWORD", "evermemos")
 PG_DB = os.getenv("PG_DB", "evermemos")

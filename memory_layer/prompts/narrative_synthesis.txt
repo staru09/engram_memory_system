@@ -1,4 +1,6 @@
-You are a memory encoding specialist. Given a raw conversation segment, produce:
+You are a memory encoding specialist. Given a raw conversation segment, extract ALL structured knowledge — every detail matters.
+
+{prior_facts_block}
 
 1. A concise third-person **Episode** narrative (2-4 sentences) that captures the key information. Resolve all pronouns and coreferences to explicit names/entities.
 
@@ -10,6 +12,25 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
    - Injury preventing activity → cannot do that activity
    - Cancelled plan → plan is no longer happening
    - New living arrangement → no longer at previous location
+
+   RELATIONAL FACTS:
+   - When person A recommends/gives/shares something with person B, extract BOTH sides:
+     "Alice recommended the book 'The Alchemist' to Bob." AND "Bob is reading 'The Alchemist' on Alice's recommendation."
+   - When someone refers to something mentioned earlier ("that book you recommended", "the place you told me about"), resolve the reference using PRIOR CONTEXT above. If prior context mentions that Alice recommended "The Alchemist", and Bob says "I'm reading that book you recommended", extract: "Bob is reading 'The Alchemist', the book Alice recommended."
+   - For family relationships, extract explicit counts: "Alice has 3 children" (count from distinct mentions: son, daughter, youngest daughter, etc.)
+   - For origin/movement: always extract BOTH "Person originates from X" AND "Person moved from X" if stated.
+
+   VERBATIM DETAILS:
+   - When someone describes a sign, poster, banner, artwork, or physical object — extract the EXACT description or text, not a summary.
+     BAD: "There was a warning sign at the restaurant."
+     GOOD: "The restaurant had a sign saying 'Please do not leave children unattended'."
+   - When someone describes a painting, drawing, or creative work — extract specific visual details (colors, style, subject).
+     BAD: "Alice shared a painting with Bob."
+     GOOD: "Alice shared a watercolor painting of a sunset with orange and purple hues with Bob on March 5, 2023."
+
+   SPEAKER ATTRIBUTION:
+   - ALWAYS include the speaker's name in each fact. Never use "they" or "the speaker".
+   - When two people do similar things (e.g., both share paintings on the same day), create SEPARATE facts for each person with clear attribution.
 
    CRITICAL RULES for fact extraction:
    - Extract ONLY what is explicitly stated or directly implied. Do NOT over-infer.
@@ -45,7 +66,17 @@ You are a memory encoding specialist. Given a raw conversation segment, produce:
    - If no clear end, set valid_until to null (indefinite)
    If there are no foresight signals, return an empty array.
 
-4. A **Scene Hint** — a short theme label (2-4 words) and a one-sentence summary describing the overall memory scene this episode belongs to.
+4. A list of **Relationships** — entity-to-entity connections mentioned in the conversation. Each relationship is a triplet: source entity, relation type, target entity. Extract relationships for people, places, organizations, activities, and objects.
+
+   Relation types: lives_in, moved_from, works_at, studies_at, friend_of, family_of, married_to, partner_of, recommended_to, interested_in, member_of, visited, attended, participates_in, created, owns
+
+   Rules:
+   - Extract relationships from BOTH speakers equally.
+   - Include entity types: person, location, organization, activity, book, event, object.
+   - Only extract relationships that are explicitly stated or directly implied.
+   - If no relationships are found, return an empty array.
+
+5. A **Scene Hint** — a short theme label (2-4 words) and a one-sentence summary describing the overall memory scene this episode belongs to.
 
 **Conversation segment:**
 {segment}
@@ -58,6 +89,11 @@ Output as JSON:
   "atomic_facts": [
     {"text": "Fact 1", "category": "preference"},
     {"text": "Fact 2", "category": "event"}
+  ],
+  "relationships": [
+    {"source": "Alice", "source_type": "person", "relation": "lives_in", "target": "Mumbai", "target_type": "location"},
+    {"source": "Alice", "source_type": "person", "relation": "friend_of", "target": "Bob", "target_type": "person"},
+    {"source": "Alice", "source_type": "person", "relation": "recommended_to", "target": "Bob", "target_type": "person"}
   ],
   "foresight": [
     {
