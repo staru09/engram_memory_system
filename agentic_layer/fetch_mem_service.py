@@ -471,7 +471,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
     if query_embedding is None:
         query_embedding = embed_text(query)
     step_timing["embedding_s"] = round(time.time() - t0, 3)
-    print(f"  [retrieval] Embed query: {step_timing['embedding_s']}s{'  [pre-computed]' if step_timing['embedding_s'] < 0.01 else ''}")
+    print(f"  [retrieval] Embed query: {step_timing['embedding_s']}s")
 
     # Step 2: Use pre-classified categories or fall back to cosine detection
     if categories is None:

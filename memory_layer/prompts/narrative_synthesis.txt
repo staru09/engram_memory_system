@@ -53,6 +53,7 @@ CRITICAL RULES:
 - NEVER infer residence from visiting a place. "I go to a park in Dwarka" does NOT mean "lives in Dwarka".
 - NEVER escalate frequency. Mentioning something once does NOT make it a habit.
 - Preserve action context: "likes to visit X", "ordered from Y", "travelled to Z".
+- COREFERENCE RESOLUTION: When the user uses pronouns or references like "wo", "they", "it", "that", "woh", "ye", trace back through the conversation to identify WHAT is being referred to. Link it to the correct entity based on conversational flow, not the most recent mention. E.g., if lunch was X and dinner plan is Y, and user says "something related to tha/thay" he means thing from past i.e. X. 
 
 CATEGORY ASSIGNMENT:
 For each atomic fact, assign a category from this list:

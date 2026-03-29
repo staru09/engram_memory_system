@@ -102,6 +102,8 @@ async def chat_stream(request: ChatRequest):
             if first_token_time is None:
                 first_token_time = _time.time() - llm_start
             text = chunk.text
+            if text is None:
+                continue
             full_response.append(text)
             yield f"data: {json.dumps({'text': text})}\n\n"
 
