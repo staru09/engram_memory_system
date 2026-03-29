@@ -643,7 +643,7 @@ def compose_context(retrieval_result: dict) -> str:
             if not (f["fact_id"] in superseded_map and superseded_map[f["fact_id"]] in fact_ids_in_context)
         ]
 
-        for f in facts[:5]:
+        for f in facts[:FAST_FACTS_LIMIT]:
             date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
             parts.append(f"- {f['fact_text']}{date_tag} (score: {f['rrf_score']:.4f})")
         parts.append("")

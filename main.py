@@ -371,25 +371,46 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     print(f"\n  Pipeline complete in {time.time() - pipeline_start:.1f}s")
 
-    # Rebuild conversation summary with new episodes
-    print(f"\n[summary] Rebuilding conversation summary...")
-    _rebuild_conversation_summary(all_new_episodes, current_date)
-
-    # Update user profile from all active facts and scene summaries
-    print(f"\n[profile] Updating user profile...")
-    update_user_profile()
-
-    # Update category profiles for affected categories
+    # Post-pipeline: summary, profile, categories — all independent, run in parallel
     from memory_layer.profile_extractor import update_category_profiles
     from agentic_layer.fetch_mem_service import invalidate_category_cache
+
     affected_categories = set()
     for r in all_results:
         for pf in r.get("parsed_facts", []):
             affected_categories.add(pf.get("category", "general"))
-    if affected_categories:
-        print(f"\n[Categories] Updating {len(affected_categories)} category profiles...")
-        update_category_profiles(affected_categories)
-        invalidate_category_cache()
+
+    post_start = time.time()
+    print(f"\n[post-pipeline] Running summary + profile + categories in parallel...")
+
+    def _run_summary():
+        t = time.time()
+        _rebuild_conversation_summary(all_new_episodes, current_date)
+        return time.time() - t
+
+    def _run_profile():
+        t = time.time()
+        update_user_profile()
+        return time.time() - t
+
+    def _run_categories():
+        t = time.time()
+        if affected_categories:
+            update_category_profiles(affected_categories)
+            invalidate_category_cache()
+        return time.time() - t
+
+    with ThreadPoolExecutor(max_workers=3) as post_executor:
+        summary_future = post_executor.submit(_run_summary)
+        profile_future = post_executor.submit(_run_profile)
+        category_future = post_executor.submit(_run_categories)
+
+        summary_time = summary_future.result()
+        profile_time = profile_future.result()
+        category_time = category_future.result()
+
+    post_total = time.time() - post_start
+    print(f"  [post-pipeline] Summary: {summary_time:.1f}s | Profile: {profile_time:.1f}s | Categories: {category_time:.1f}s | Total: {post_total:.1f}s (parallel)")
 
     total_memcells = len(all_results)
     total_conflicts = sum(r["conflicts"] for r in all_results)
