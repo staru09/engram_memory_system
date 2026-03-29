@@ -15,6 +15,7 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
   const [metadata, setMetadata] = useState<QueryMetadata | null>(null);
   const [showMetadata, setShowMetadata] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
+  const [fastMode, setFastMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -60,7 +61,7 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
     setShowMetadata(false);
 
     try {
-      const result = await api.queryMemory(queryText.trim(), threadId);
+      const result = await api.queryMemory(queryText.trim(), threadId, fastMode);
       setResponse(result.response);
       setMetadata(result.metadata);
     } catch {
@@ -85,9 +86,23 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
             <Search size={20} className="text-[#00a884]" />
             <h2 className="text-[#111b21] font-semibold text-lg">Query Memory</h2>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-200 rounded-full transition-colors">
-            <X size={20} className="text-[#54656f]" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setFastMode(!fastMode)}
+              className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
+                fastMode
+                  ? 'bg-[#00a884] text-white'
+                  : 'bg-gray-200 text-[#667781]'
+              }`}
+              title={fastMode ? 'Fast mode: profile + summaries only' : 'Normal mode: full search pipeline'}
+            >
+              <Zap size={12} className="inline mr-1" />
+              {fastMode ? 'Fast' : 'Normal'}
+            </button>
+            <button onClick={onClose} className="p-1.5 hover:bg-gray-200 rounded-full transition-colors">
+              <X size={20} className="text-[#54656f]" />
+            </button>
+          </div>
         </div>
 
         {/* Search Input */}
@@ -134,11 +149,11 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
                 <div className="space-y-2">
                   <div className="flex items-center gap-3 text-xs text-[#667781]">
                     <span className={`px-2 py-0.5 rounded-full font-medium ${
-                      metadata.complexity === 'SIMPLE'
+                      metadata.mode === 'fast'
                         ? 'bg-green-100 text-green-700'
                         : 'bg-blue-100 text-blue-700'
                     }`}>
-                      {metadata.complexity}
+                      {metadata.mode === 'fast' ? 'Fast' : 'Normal'}
                     </span>
                     <span className="flex items-center gap-1">
                       <Clock size={12} />
@@ -152,17 +167,6 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
 
                   {/* Per-step timing bar */}
                   <TimingBar timing={metadata.timing} />
-                </div>
-              )}
-
-              {/* Categories matched */}
-              {metadata?.categories_matched && metadata.categories_matched.length > 0 && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  {metadata.categories_matched.map((cat, i) => (
-                    <span key={i} className="px-2 py-0.5 bg-gray-100 rounded-full text-[10px] text-[#667781] font-medium">
-                      {cat}
-                    </span>
-                  ))}
                 </div>
               )}
 

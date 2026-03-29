@@ -397,11 +397,16 @@ def retrieve_simple(query: str, categories: list[str] = None,
 
     retrieval_start = time.time()
 
+    t0 = time.time()
     category_profiles = db.get_profile_categories(categories) if categories else []
+    cat_time = time.time() - t0
+
+    t0 = time.time()
     profile = db.get_user_profile()
+    profile_time = time.time() - t0
 
     context_compose_s = round(time.time() - retrieval_start, 3)
-    print(f"  [simple-retrieval] {len(category_profiles)} categories, profile={'yes' if profile else 'no'} ({context_compose_s}s)")
+    print(f"  [simple-retrieval] categories: {cat_time:.3f}s ({len(category_profiles)}), profile: {profile_time:.3f}s, total: {context_compose_s}s")
 
     return {
         "episodes": [],

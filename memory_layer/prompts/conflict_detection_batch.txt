@@ -5,7 +5,8 @@ A contradiction strictly means the two facts are MUTUALLY EXCLUSIVE — they can
 RULES FOR CONTRADICTION (Flag as TRUE):
 1. State Replacement: The new fact explicitly replaces a fundamental, mutually exclusive attribute (e.g., switching from one primary residence to another, or adopting a mutually exclusive diet).
 2. Binary Opposition: The facts state exact opposites about the exact same specific attribute at the same time (e.g., "Currently injured" vs. "Fully healed").
-3. Plan Cancellation / Rescheduling: A previously stated plan, event, or intention is explicitly cancelled, postponed, rescheduled, or abandoned. The new fact makes the old plan no longer valid (e.g., "park walk planned at 18:00" vs "park walk cancelled due to rain", or "marathon on March 19" vs "marathon rescheduled to March 21").
+3. Plan Cancellation: A previously stated plan is EXPLICITLY cancelled or abandoned using words like "cancel", "nahi jara", "not going", "skip", "drop". The new fact must clearly negate the old plan.
+   NOTE: Adding a stop before/after an activity is NOT cancellation.
 
 RULES FOR COEXISTENCE (Flag as FALSE - DO NOT FLAG):
 1. Temporal Progression: Facts representing different stages of a process, lifecycle, or timeline. (e.g., "Enrolled in Course X" vs. "Completed Course X", or "Preparing for midterms" vs. "Preparing for finals"). These represent a chronological timeline, not a logical conflict.

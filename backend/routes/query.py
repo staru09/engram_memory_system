@@ -1,12 +1,10 @@
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter
 
 import db
 from models import QueryLog
-from agentic_layer.query_classifier import classify_query
 from agentic_layer.fetch_mem_service import retrieve_simple, retrieve_fast, compose_context, compose_context_fast
 from agentic_layer.vectorize_service import embed_text
 from backend.schemas import QueryRequest
@@ -26,7 +24,7 @@ def _date_str(val):
     return str(val)
 
 
-def _build_metadata(raw_result: dict, classification: dict,
+def _build_metadata(raw_result: dict, mode: str,
                     retrieval_time: float, llm_time: float) -> dict:
     retrieval_timing = raw_result.get("timing", {})
     return {
@@ -59,13 +57,11 @@ def _build_metadata(raw_result: dict, classification: dict,
             }
             for fs in raw_result.get("foresight", [])
         ],
-        "categories_matched": classification.get("categories", []),
-        "complexity": classification.get("complexity", "COMPLEX"),
+        "mode": mode,
         "profile_included": raw_result.get("profile") is not None,
         "timing": {
             "total_retrieval_s": round(retrieval_time, 3),
             "llm_response_s": round(llm_time, 3),
-            "classifier_s": classification.get("classifier_s", 0),
             "embedding_s": retrieval_timing.get("embedding_s", 0),
             "search_s": retrieval_timing.get("search_s", 0),
             "foresight_s": retrieval_timing.get("foresight_s", 0),
@@ -92,33 +88,26 @@ def query_memory(request: QueryRequest):
     if request.thread_id:
         recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Classify query
-    classification = classify_query(request.query)
-    complexity = classification.get("complexity", "COMPLEX")
-    categories = classification.get("categories", [])
-    print(f"  [query] Classified as {complexity}, categories: {categories} ({classification.get('classifier_s', 0)}s)")
-
-    # 4. Route to appropriate retrieval tier (retrieval time excludes classifier)
+    # 3. Retrieve based on mode
     retrieval_start = time.time()
-    if complexity == "NONE":
-        raw_result = retrieve_simple(request.query, categories=categories,
-                                     query_time=query_time.replace(tzinfo=None))
-        context = compose_context_fast(raw_result)
-    elif complexity == "SIMPLE":
-        raw_result = retrieve_simple(request.query, categories=categories,
+
+    if request.fast:
+        mode = "fast"
+        raw_result = retrieve_simple(request.query,
                                      query_time=query_time.replace(tzinfo=None))
         context = compose_context_fast(raw_result)
     else:
+        mode = "normal"
         query_embedding = embed_text(request.query)
         raw_result = retrieve_fast(request.query,
                                    query_time=query_time.replace(tzinfo=None),
-                                   categories=categories,
                                    query_embedding=query_embedding)
         context = compose_context(raw_result)
 
     retrieval_time = time.time() - retrieval_start
+    print(f"  [query] Mode: {mode}, retrieval: {retrieval_time:.2f}s")
 
-    # 5. Build query-specific prompt
+    # 4. Build query-specific prompt
     prompt = build_query_prompt(
         query=request.query,
         memory_context=context,
@@ -126,15 +115,16 @@ def query_memory(request: QueryRequest):
         query_time=query_time,
     )
 
-    # 6. Call Gemini with tools
+    # 5. Call Gemini with tools
     llm_start = time.time()
     answer = call_gemini_with_tools(prompt)
     llm_time = time.time() - llm_start
+    print(f"  [query] LLM: {llm_time:.1f}s")
 
-    # 7. Build metadata
-    metadata = _build_metadata(raw_result, classification, retrieval_time, llm_time)
+    # 6. Build metadata
+    metadata = _build_metadata(raw_result, mode, retrieval_time, llm_time)
 
-    # 8. Log to query_logs table
+    # 7. Log to query_logs table
     try:
         log = QueryLog(
             thread_id=request.thread_id,

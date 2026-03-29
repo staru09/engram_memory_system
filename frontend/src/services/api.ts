@@ -100,11 +100,11 @@ export const api = {
     }
   },
 
-  async queryMemory(query: string, threadId?: string): Promise<QueryResponse> {
+  async queryMemory(query: string, threadId?: string, fast?: boolean): Promise<QueryResponse> {
     const response = await fetch(`${API_BASE_URL}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, thread_id: threadId || null }),
+      body: JSON.stringify({ query, thread_id: threadId || null, fast: fast || false }),
     });
     if (!response.ok) throw new Error('Query failed');
     return response.json();
@@ -132,13 +132,11 @@ export interface QueryMetadata {
     source_date: string | null;
     query_sim: number | null;
   }>;
-  categories_matched: string[];
-  complexity: 'SIMPLE' | 'COMPLEX';
+  mode: 'fast' | 'normal';
   profile_included: boolean;
   timing: {
     total_retrieval_s: number;
     llm_response_s: number;
-    classifier_s: number;
     embedding_s: number;
     search_s: number;
     foresight_s: number;

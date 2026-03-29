@@ -50,11 +50,18 @@ def extract_episode(segment_dialogue: str, current_date: str = None,
               .replace("{current_date}", current_date))
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
 
-    text = response.text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        if text.endswith("```"):
-            text = text[:-3]
+    def _parse_response(resp_text: str) -> dict:
+        text = resp_text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]
+            if text.endswith("```"):
+                text = text[:-3]
+        return json.loads(text)
 
-    parsed = json.loads(text)
-    return parsed
+    try:
+        return _parse_response(response.text)
+    except json.JSONDecodeError:
+        # Retry once on malformed JSON
+        print(f"  [extract] JSON parse failed, retrying...")
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        return _parse_response(response.text)
