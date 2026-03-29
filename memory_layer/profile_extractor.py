@@ -22,14 +22,11 @@ def _load_category_prompt():
         return f.read()
 
 
-def update_user_profile():
+def update_user_profile(new_facts: list[str] = None):
     """
-    Rebuild user profile from active facts only.
-
-    Reads existing profile (if any), gathers all active (non-superseded)
-    facts, and asks Gemini to produce an updated compact profile.
+    Update user profile incrementally with new facts from current batch.
+    Falls back to full rebuild if no new_facts provided (first time / migration).
     """
-    # Get existing profile
     existing = db.get_user_profile()
     if existing:
         prev_profile = json.dumps({
@@ -39,20 +36,19 @@ def update_user_profile():
     else:
         prev_profile = "None (first time creating profile)"
 
-    # Get all active facts (source of truth — superseded facts are excluded)
-    conn = db.get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT fact_text FROM atomic_facts WHERE is_active = TRUE ORDER BY created_at DESC")
-    facts = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not facts:
-        return
-
-    facts_text = "\n".join(
-        f"- {fact_text}" for (fact_text,) in facts
-    )
+    if new_facts:
+        facts_text = "\n".join(f"- {f}" for f in new_facts)
+    else:
+        # Fallback: full rebuild (first time or migration)
+        conn = db.get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT fact_text FROM atomic_facts WHERE is_active = TRUE ORDER BY created_at DESC")
+        facts = cur.fetchall()
+        cur.close()
+        db.release_connection(conn)
+        if not facts:
+            return
+        facts_text = "\n".join(f"- {fact_text}" for (fact_text,) in facts)
 
     prompt_template = _load_prompt()
     prompt = prompt_template.replace("{previous_profile}", prev_profile).replace("{active_facts}", facts_text)
@@ -76,16 +72,15 @@ def update_user_profile():
     return profile
 
 
-def _update_single_category(cat_name: str, prompt_template: str) -> str | None:
-    """Update a single category profile. Returns cat_name on success, None on skip."""
-    facts = db.get_active_facts_by_category(cat_name)
-    if not facts:
+def _update_single_category(cat_name: str, new_facts: list[str], prompt_template: str) -> str | None:
+    """Update a single category profile incrementally. Returns cat_name on success, None on skip."""
+    if not new_facts:
         return None
 
     existing = db.get_profile_category(cat_name)
     prev_summary = existing["summary_text"] if existing and existing.get("summary_text") else "None (first time)"
 
-    facts_text = "\n".join(f"- {f['fact_text']}" for f in facts)
+    facts_text = "\n".join(f"- {f}" for f in new_facts)
     prompt = prompt_template.replace("{category_name}", cat_name).replace(
         "{previous_summary}", prev_summary
     ).replace("{facts_list}", facts_text)
@@ -94,25 +89,26 @@ def _update_single_category(cat_name: str, prompt_template: str) -> str | None:
     summary = response.text.strip()
 
     summary_embedding = embed_text(summary)
-    db.upsert_profile_category(cat_name, summary, len(facts), summary_embedding)
-    print(f"       [{cat_name}] {len(facts)} facts → {len(summary)} chars")
+    new_count = (existing.get("fact_count", 0) if existing else 0) + len(new_facts)
+    db.upsert_profile_category(cat_name, summary, new_count, summary_embedding)
+    print(f"       [{cat_name}] +{len(new_facts)} new facts → {len(summary)} chars")
     return cat_name
 
 
-def update_category_profiles(affected_categories: set[str] = None):
-    """Rebuild profile sections for affected categories in parallel."""
+def update_category_profiles(new_facts_by_category: dict[str, list[str]]):
+    """Update category profiles incrementally with only new facts, in parallel."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    if affected_categories is None:
-        affected_categories = db.get_categories_with_facts()
+    if not new_facts_by_category:
+        return
 
     prompt_template = _load_category_prompt()
 
-    with ThreadPoolExecutor(max_workers=len(affected_categories)) as executor:
+    with ThreadPoolExecutor(max_workers=len(new_facts_by_category)) as executor:
         futures = {
-            executor.submit(_update_single_category, cat, prompt_template): cat
-            for cat in affected_categories
+            executor.submit(_update_single_category, cat, facts, prompt_template): cat
+            for cat, facts in new_facts_by_category.items()
         }
         updated = sum(1 for f in as_completed(futures) if f.result() is not None)
 
-    print(f"       Category profiles updated: {updated}/{len(affected_categories)} categories")
+    print(f"       Category profiles updated: {updated}/{len(new_facts_by_category)} categories")

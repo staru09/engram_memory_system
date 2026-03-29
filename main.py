@@ -375,10 +375,13 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     from memory_layer.profile_extractor import update_category_profiles
     from agentic_layer.fetch_mem_service import invalidate_category_cache
 
-    affected_categories = set()
+    new_facts_by_category = {}
     for r in all_results:
         for pf in r.get("parsed_facts", []):
-            affected_categories.add(pf.get("category", "general"))
+            cat = pf.get("category", "general")
+            if cat not in new_facts_by_category:
+                new_facts_by_category[cat] = []
+            new_facts_by_category[cat].append(pf["text"])
 
     post_start = time.time()
     print(f"\n[post-pipeline] Running summary + session_summary + profile + categories in parallel...")
@@ -412,13 +415,14 @@ Return ONLY the summary text, no JSON or formatting."""
 
     def _run_profile():
         t = time.time()
-        update_user_profile()
+        all_new_facts = [pf["text"] for r in all_results for pf in r.get("parsed_facts", [])]
+        update_user_profile(new_facts=all_new_facts if all_new_facts else None)
         return time.time() - t
 
     def _run_categories():
         t = time.time()
-        if affected_categories:
-            update_category_profiles(affected_categories)
+        if new_facts_by_category:
+            update_category_profiles(new_facts_by_category)
             invalidate_category_cache()
         return time.time() - t
 

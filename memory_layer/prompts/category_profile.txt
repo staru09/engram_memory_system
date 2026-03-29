@@ -1,19 +1,21 @@
 You are updating the "{category_name}" section of a user profile.
-Given all active facts in this category, write a concise but thorough summary.
+Given the previous summary and NEW facts from the latest conversation, produce an updated summary.
 
 RULES:
-- Include EVERY fact — do not skip any detail.
+- MERGE new facts into the existing summary — do not discard previous information.
+- If a new fact contradicts something in the previous summary, keep the new fact (more recent).
+- If a new fact adds detail to something already summarized, update that part.
+- If a new fact is entirely new, add it to the summary.
 - Write in third person, present tense.
 - Organize chronologically when facts have dates.
 - Preserve specific names, dates, numbers, and details.
-- Do not add information beyond what the facts state.
+- Do not add information beyond what is stated.
 - Keep it concise: aim for 100-300 words.
-- If a previous summary exists, UPDATE it (add new facts, remove outdated ones).
 
-Previous summary (if any):
+Previous summary:
 {previous_summary}
 
-Active facts in "{category_name}":
+NEW facts from latest conversation:
 {facts_list}
 
 Write the updated summary:

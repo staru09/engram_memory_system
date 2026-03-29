@@ -19,7 +19,7 @@ If a previous profile exists, UPDATE it:
 **Previous profile (if any):**
 {previous_profile}
 
-**Active facts (only current, non-superseded facts):**
+**New facts from latest conversation (merge into previous profile):**
 {active_facts}
 
 Output as JSON:

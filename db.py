@@ -315,11 +315,6 @@ def keyword_search_facts(query: str, top_k: int = 10, query_time=None,
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # Debug: show what PostgreSQL parses the OR query into
-    cur.execute("SELECT websearch_to_tsquery('english', %s)::text AS parsed", (or_query,))
-    parsed = cur.fetchone()
-    print(f"    [keyword-debug] or_query='{or_query}' -> tsquery='{parsed['parsed']}'")
-
     if date_filter:
         cur.execute("""
             SELECT id, memcell_id, fact_text, conversation_date,

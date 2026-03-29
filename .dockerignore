@@ -15,8 +15,16 @@ docker-compose.yml
 render.yaml
 runtime.txt
 *.md
-utils/
 RESULTS_COMBINED/
 venv/
 db_backup/
 .github
+locomo/
+benchmark/
+scripts/
+benchmark_results/
+.claude
+.github/
+utils/
+papers/
+*.pdf
