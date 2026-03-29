@@ -388,18 +388,52 @@ FAST_FACT_MIN_SCORE = 0.005  # drop facts below this RRF score (noise)
 FAST_FORESIGHT_MIN_SIM = 0.7  # drop foresight below this query similarity
 
 
+def retrieve_simple(query: str, categories: list[str] = None,
+                    query_time: datetime = None) -> dict:
+    """Tier-1 retrieval: category summaries + user profile only. No search."""
+    IST = timezone(timedelta(hours=5, minutes=30))
+    if query_time is None:
+        query_time = datetime.now(IST).replace(tzinfo=None)
+
+    retrieval_start = time.time()
+
+    category_profiles = db.get_profile_categories(categories) if categories else []
+    profile = db.get_user_profile()
+
+    context_compose_s = round(time.time() - retrieval_start, 3)
+    print(f"  [simple-retrieval] {len(category_profiles)} categories, profile={'yes' if profile else 'no'} ({context_compose_s}s)")
+
+    return {
+        "episodes": [],
+        "foresight": [],
+        "profile": profile,
+        "facts": [],
+        "scenes": [],
+        "category_profiles": category_profiles,
+        "timing": {
+            "embedding_s": 0,
+            "search_s": 0,
+            "foresight_s": 0,
+            "context_compose_s": context_compose_s,
+        },
+    }
+
+
 def retrieve_fast(query: str, query_time: datetime = None,
                   top_k_facts: int = FAST_FACTS_LIMIT,
-                  temporal_result: dict = None) -> dict:
+                  temporal_result: dict = None,
+                  categories: list[str] = None,
+                  query_embedding: list[float] = None) -> dict:
     """
-    Facts-only retrieval pipeline. Skips scene scoring, episode pooling,
-    and all episode filters. Returns facts + foresight + profile only.
+    Tier-2 retrieval: full pipeline with facts + foresight + episodes + profile.
+    Accepts pre-computed categories (from classifier) and query_embedding (from parallel execution).
     """
     IST = timezone(timedelta(hours=5, minutes=30))
     if query_time is None:
         query_time = datetime.now(IST).replace(tzinfo=None)
 
     retrieval_start = time.time()
+    step_timing = {}
 
     # Step 0: Temporal expression detection
     current_ist = datetime.now(IST)
@@ -407,12 +441,12 @@ def retrieve_fast(query: str, query_time: datetime = None,
         t0 = time.time()
         temporal_result = parse_temporal_query(query, current_ist)
         if temporal_result:
-            print(f"  [fast-retrieval] Temporal parse: {temporal_result.get('date_from')} to {temporal_result.get('date_to')} "
+            print(f"  [retrieval] Temporal parse: {temporal_result.get('date_from')} to {temporal_result.get('date_to')} "
                   f"(mixed={temporal_result.get('is_mixed', False)}) {time.time() - t0:.2f}s")
         else:
-            print(f"  [fast-retrieval] Temporal parse: none ({time.time() - t0:.2f}s)")
+            print(f"  [retrieval] Temporal parse: none ({time.time() - t0:.2f}s)")
     else:
-        print(f"  [fast-retrieval] Temporal parse: reusing pre-computed result")
+        print(f"  [retrieval] Temporal parse: reusing pre-computed result")
 
     date_filter = None
     effective_query_time = query_time
@@ -427,15 +461,20 @@ def retrieve_fast(query: str, query_time: datetime = None,
         if not is_mixed:
             effective_query_time = datetime.strptime(temporal_result["date_to"], "%Y-%m-%d")
 
-    # Step 1: Embed query (reused by vector search + foresight)
+    # Step 1: Embed query (skip if pre-computed from parallel execution)
     t0 = time.time()
-    query_embedding = embed_text(query)
-    print(f"  [fast-retrieval] Embed query: {time.time() - t0:.2f}s")
+    if query_embedding is None:
+        query_embedding = embed_text(query)
+    step_timing["embedding_s"] = round(time.time() - t0, 3)
+    print(f"  [retrieval] Embed query: {step_timing['embedding_s']}s{'  [pre-computed]' if step_timing['embedding_s'] < 0.01 else ''}")
 
-    # Step 2: Detect relevant categories (~0ms, in-memory cosine)
-    relevant_cats = _detect_query_categories(query_embedding)
+    # Step 2: Use pre-classified categories or fall back to cosine detection
+    if categories is None:
+        relevant_cats = _detect_query_categories(query_embedding)
+    else:
+        relevant_cats = categories
     if relevant_cats:
-        print(f"  [fast-retrieval] Categories: {relevant_cats}")
+        print(f"  [retrieval] Categories: {relevant_cats}")
 
     # Step 3: Launch foresight + category fetch in parallel with hybrid search
     parallel_executor = ThreadPoolExecutor(max_workers=2)
@@ -464,48 +503,57 @@ def retrieve_fast(query: str, query_time: datetime = None,
         top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
                                   query_embedding=query_embedding, date_filter=date_filter)
         if date_filter and len(top_facts) < 3:
-            print(f"  [fast-retrieval] Date filter returned {len(top_facts)} facts, retrying without filter")
+            print(f"  [retrieval] Date filter returned {len(top_facts)} facts, retrying without filter")
             top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
                                       query_embedding=query_embedding, date_filter=None)
 
-    print(f"  [fast-retrieval] Hybrid search ({len(top_facts)} facts): {time.time() - t0:.2f}s")
+    step_timing["search_s"] = round(time.time() - t0, 3)
+    print(f"  [retrieval] Hybrid search ({len(top_facts)} facts): {step_timing['search_s']}s")
 
     if not top_facts:
         active_foresight, foresight_duration = foresight_future.result()
         category_profiles = category_future.result()
         parallel_executor.shutdown(wait=False)
-        print(f"  [fast-retrieval] Foresight ({len(active_foresight)} active): {foresight_duration:.2f}s [parallel]")
-        print(f"  [fast-retrieval] No facts found. Total: {time.time() - retrieval_start:.2f}s")
+        step_timing["foresight_s"] = round(foresight_duration, 3)
+        step_timing["context_compose_s"] = 0
+        print(f"  [retrieval] No facts found. Total: {time.time() - retrieval_start:.2f}s")
         return {"episodes": [], "foresight": active_foresight, "profile": None, "facts": [],
-                "scenes": [], "category_profiles": category_profiles}
+                "scenes": [], "category_profiles": category_profiles, "timing": step_timing}
 
     # Fact deduplication
     before_dedup = len(top_facts)
     top_facts = deduplicate_facts(top_facts)
     if len(top_facts) < before_dedup:
-        print(f"  [fast-retrieval] Dedup: {before_dedup} → {len(top_facts)} facts")
+        print(f"  [retrieval] Dedup: {before_dedup} → {len(top_facts)} facts")
 
-    # Step 5: Drop low-scoring facts (noise) — skip when date_filter is active
-    # Date-filtered queries already have precision from the date range, so even low-scoring facts are relevant
+    # Drop low-scoring facts (noise) — skip when date_filter is active
     if not date_filter:
         before_score_filter = len(top_facts)
         top_facts = [f for f in top_facts if f["rrf_score"] >= FAST_FACT_MIN_SCORE]
         if len(top_facts) < before_score_filter:
-            print(f"  [fast-retrieval] Score filter: {before_score_filter} → {len(top_facts)} facts (min score: {FAST_FACT_MIN_SCORE})")
+            print(f"  [retrieval] Score filter: {before_score_filter} → {len(top_facts)} facts")
 
     # Collect foresight + category profiles (were running in parallel)
     active_foresight, foresight_duration = foresight_future.result()
     category_profiles = category_future.result()
     parallel_executor.shutdown(wait=False)
+    step_timing["foresight_s"] = round(foresight_duration, 3)
 
     # Filter out irrelevant foresight by query similarity
     before_foresight_filter = len(active_foresight)
     active_foresight = [fs for fs in active_foresight if fs.get("query_sim", 0.0) >= FAST_FORESIGHT_MIN_SIM]
     if len(active_foresight) < before_foresight_filter:
-        print(f"  [fast-retrieval] Foresight relevance filter: {before_foresight_filter} → {len(active_foresight)}")
-    print(f"  [fast-retrieval] Foresight ({len(active_foresight)} active): {foresight_duration:.2f}s [parallel]")
+        print(f"  [retrieval] Foresight filter: {before_foresight_filter} → {len(active_foresight)}")
+    print(f"  [retrieval] Foresight ({len(active_foresight)} active): {foresight_duration:.2f}s [parallel]")
     if category_profiles:
-        print(f"  [fast-retrieval] Category profiles: {[cp['category_name'] for cp in category_profiles]}")
+        print(f"  [retrieval] Category profiles: {[cp['category_name'] for cp in category_profiles]}")
+
+    # Episode enrichment: fetch episodes from top fact memcell IDs (replaces scene-based pooling)
+    t0 = time.time()
+    memcell_ids = list(set(f["memcell_id"] for f in top_facts[:top_k_facts] if f.get("memcell_id")))
+    memcells_map = db.get_memcells_by_ids(memcell_ids) if memcell_ids else {}
+    episodes = list(memcells_map.values())
+    print(f"  [retrieval] Episodes from {len(memcell_ids)} memcells: {len(episodes)} ({time.time() - t0:.2f}s)")
 
     # Profile
     is_historical = (date_filter is not None
@@ -513,17 +561,21 @@ def retrieve_fast(query: str, query_time: datetime = None,
                      and effective_query_time.date() != datetime.now(IST).date())
     profile = None if is_historical else db.get_user_profile()
 
-    print(f"  [fast-retrieval] Total: {time.time() - retrieval_start:.2f}s "
-          f"({len(top_facts)} facts, {len(active_foresight)} foresight, {len(category_profiles)} categories)"
+    step_timing["context_compose_s"] = round(time.time() - t0, 3)
+
+    total_s = time.time() - retrieval_start
+    print(f"  [retrieval] Total: {total_s:.2f}s "
+          f"({len(top_facts)} facts, {len(episodes)} episodes, {len(active_foresight)} foresight, {len(category_profiles)} categories)"
           f"{' [temporal]' if date_filter else ''}")
 
     return {
-        "episodes": [],
+        "episodes": episodes,
         "foresight": active_foresight,
         "profile": profile,
         "facts": top_facts[:top_k_facts],
         "scenes": [],
         "category_profiles": category_profiles,
+        "timing": step_timing,
     }
 
 

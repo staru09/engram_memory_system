@@ -49,11 +49,62 @@ export const api = {
     return response.json();
   },
 
-  async queryMemory(query: string, threadId?: string, fast?: boolean): Promise<QueryResponse> {
+  async streamMessage(
+    message: string,
+    threadId: string,
+    onToken: (text: string) => void,
+    onDone: () => void,
+    onError: (error: Error) => void,
+  ): Promise<void> {
+    try {
+      const response = await fetch(`${API_BASE_URL}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, thread_id: threadId }),
+      });
+      if (!response.ok) throw new Error('Stream failed');
+      if (!response.body) throw new Error('No response body');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6);
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.done) {
+              onDone();
+              return;
+            }
+            if (parsed.text) {
+              onToken(parsed.text);
+            }
+          } catch {
+            // skip malformed JSON
+          }
+        }
+      }
+      onDone();
+    } catch (error) {
+      onError(error instanceof Error ? error : new Error(String(error)));
+    }
+  },
+
+  async queryMemory(query: string, threadId?: string): Promise<QueryResponse> {
     const response = await fetch(`${API_BASE_URL}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, thread_id: threadId || null, fast: fast || false }),
+      body: JSON.stringify({ query, thread_id: threadId || null }),
     });
     if (!response.ok) throw new Error('Query failed');
     return response.json();
@@ -71,11 +122,7 @@ export interface QueryMetadata {
   episodes: Array<{
     memcell_id: number;
     episode_text: string;
-    relevance_score: number;
-    semantic_sim: number | null;
-    staleness: number | null;
     conversation_date: string | null;
-    scene_id: number;
   }>;
   foresight: Array<{
     id: number;
@@ -85,21 +132,17 @@ export interface QueryMetadata {
     source_date: string | null;
     query_sim: number | null;
   }>;
-  scenes: Array<{
-    scene_id: number;
-    best_score: number;
-    fact_ids: number[];
-  }>;
+  categories_matched: string[];
+  complexity: 'SIMPLE' | 'COMPLEX';
   profile_included: boolean;
-  sufficiency: {
-    is_sufficient: boolean;
-    rounds: number;
-    reasoning: string;
-    missing_information: string[];
-  };
   timing: {
     total_retrieval_s: number;
     llm_response_s: number;
+    classifier_s: number;
+    embedding_s: number;
+    search_s: number;
+    foresight_s: number;
+    context_compose_s: number;
   };
 }
 

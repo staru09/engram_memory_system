@@ -11,3 +11,4 @@ db_backup/
 prod.env
 benchmark_results/
 benchmark/
+scripts/

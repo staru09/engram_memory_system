@@ -152,6 +152,16 @@ def init_schema():
             summary_text    TEXT NOT NULL DEFAULT '',
             updated_at      TIMESTAMP DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS session_summaries (
+            id              SERIAL PRIMARY KEY,
+            source_id       VARCHAR(100) NOT NULL,
+            session_date    DATE,
+            summary_text    TEXT NOT NULL,
+            embedding       FLOAT8[],
+            created_at      TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_summaries_date ON session_summaries (session_date);
     """)
     conn.commit()
     cur.close()
@@ -917,3 +927,50 @@ def upsert_conversation_summary(summary_text: str):
     conn.commit()
     cur.close()
     release_connection(conn)
+
+
+# ── Session Summaries CRUD ──
+
+def insert_session_summary(source_id: str, session_date: str, summary_text: str,
+                           embedding: list[float] = None) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO session_summaries (source_id, session_date, summary_text, embedding)
+        VALUES (%s, %s, %s, %s) RETURNING id
+    """, (source_id, session_date, summary_text, embedding))
+    row_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return row_id
+
+
+def get_session_summaries(limit: int = 5) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, source_id, session_date, summary_text
+        FROM session_summaries ORDER BY session_date DESC LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [{"id": r[0], "source_id": r[1], "session_date": r[2], "summary_text": r[3]}
+            for r in rows]
+
+
+def get_session_summaries_by_date_range(start_date: str, end_date: str) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, source_id, session_date, summary_text
+        FROM session_summaries
+        WHERE session_date >= %s AND session_date <= %s
+        ORDER BY session_date
+    """, (start_date, end_date))
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [{"id": r[0], "source_id": r[1], "session_date": r[2], "summary_text": r[3]}
+            for r in rows]

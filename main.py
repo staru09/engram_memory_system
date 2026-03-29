@@ -104,7 +104,7 @@ Rules:
   Example: "Alice likes coffee" + "Alice went hiking" → keep as 2 separate facts
 - Never lose specific details (dates, names, numbers, places) during merging
 - Each merged fact must still be a self-contained assertion
-- Preserve the category from the most specific original fact
+- Category MUST be one of: personal_info, preferences, relationships, activities, goals, experiences, knowledge, opinions, habits, work_life
 
 Output as JSON array:
 [{{"text": "merged fact", "category": "category_name"}}]
@@ -225,10 +225,13 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
                 await loop.run_in_executor(_executor, db.update_foresight_embedding,
                                            foresight_id, foresight_embeddings[i])
 
-        # Assign to MemScene (uses pre-computed embedding)
-        scene_id = await loop.run_in_executor(
-            _executor, assign_to_scene, memcell_id, episode_text, episode_embedding, scene_hint
-        )
+        scene_id = None
+        try:
+            scene_id = await loop.run_in_executor(
+                _executor, assign_to_scene, memcell_id, episode_text, episode_embedding, scene_hint
+            )
+        except Exception as e:
+            print(f"   [phase1] Scene assignment failed (non-critical): {e}")
 
         print(f"   [phase1] Done {seg_label} → scene {scene_id}, {len(atomic_facts)} facts")
 
@@ -349,9 +352,6 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         for ext in batch_extractions:
             all_new_episodes.append(ext["episode_text"])
 
-        # I3: Consolidate related facts within this batch before storing
-        for ext in batch_extractions:
-            ext["atomic_facts"] = _consolidate_facts(ext["atomic_facts"])
 
         print(f"       Extraction: {time.time() - extract_start:.1f}s")
 
@@ -381,11 +381,33 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
             affected_categories.add(pf.get("category", "general"))
 
     post_start = time.time()
-    print(f"\n[post-pipeline] Running summary + profile + categories in parallel...")
+    print(f"\n[post-pipeline] Running summary + session_summary + profile + categories in parallel...")
 
     def _run_summary():
         t = time.time()
         _rebuild_conversation_summary(all_new_episodes, current_date)
+        return time.time() - t
+
+    def _run_session_summary():
+        """Store per-session summary with embedding for retrieval use."""
+        t = time.time()
+        if not all_new_episodes:
+            return 0.0
+        episodes_text = "\n".join(f"- {ep}" for ep in all_new_episodes)
+        prompt = f"""Summarize this conversation session in 3-5 sentences. Focus on key events, decisions, and new information shared.
+
+EPISODES (from session dated {current_date}):
+{episodes_text}
+
+Return ONLY the summary text, no JSON or formatting."""
+        try:
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            summary = response.text.strip()
+            summary_embedding = embed_text(summary)
+            db.insert_session_summary(source_id, current_date, summary, summary_embedding)
+            print(f"  [session-summary] Stored ({len(summary)} chars)")
+        except Exception as e:
+            print(f"  [session-summary] Failed: {e}")
         return time.time() - t
 
     def _run_profile():
@@ -400,17 +422,19 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
             invalidate_category_cache()
         return time.time() - t
 
-    with ThreadPoolExecutor(max_workers=3) as post_executor:
+    with ThreadPoolExecutor(max_workers=4) as post_executor:
         summary_future = post_executor.submit(_run_summary)
+        session_summary_future = post_executor.submit(_run_session_summary)
         profile_future = post_executor.submit(_run_profile)
         category_future = post_executor.submit(_run_categories)
 
         summary_time = summary_future.result()
+        session_summary_time = session_summary_future.result()
         profile_time = profile_future.result()
         category_time = category_future.result()
 
     post_total = time.time() - post_start
-    print(f"  [post-pipeline] Summary: {summary_time:.1f}s | Profile: {profile_time:.1f}s | Categories: {category_time:.1f}s | Total: {post_total:.1f}s (parallel)")
+    print(f"  [post-pipeline] Summary: {summary_time:.1f}s | Session: {session_summary_time:.1f}s | Profile: {profile_time:.1f}s | Categories: {category_time:.1f}s | Total: {post_total:.1f}s (parallel)")
 
     total_memcells = len(all_results)
     total_conflicts = sum(r["conflicts"] for r in all_results)
@@ -425,6 +449,7 @@ def reset_databases():
     conn = db.get_connection()
     cur = conn.cursor()
     cur.execute("""
+        DROP TABLE IF EXISTS session_summaries CASCADE;
         DROP TABLE IF EXISTS profile_categories CASCADE;
         DROP TABLE IF EXISTS conflicts CASCADE;
         DROP TABLE IF EXISTS foresight CASCADE;

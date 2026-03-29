@@ -21,7 +21,7 @@ EXTRACTION THOROUGHNESS:
 - If someone mentions a place they lived/visited, extract the PLACE NAME.
 - If someone mentions a time period (e.g., "moved here 4 years ago"), compute the actual year and include it.
 - If someone shares an opinion, preference, or feeling, extract it as a fact.
-- Extract facts about BOTH speakers equally.
+- Extract facts about all non-[CONTEXT ONLY] speakers. If no [CONTEXT ONLY] tags, extract from both speakers equally.
 - When in doubt, extract it as a separate fact. More facts is better than fewer.
 
 RELATIONAL FACTS:
@@ -69,8 +69,12 @@ For each atomic fact, assign a category from this list:
 Choose the MOST SPECIFIC matching category. If none fit, use "general".
 
 SOURCE ATTRIBUTION RULE:
-- Extract Atomic Facts and Foresight Signals from ALL speakers in the conversation.
-- Both participants are equal sources of facts.
+- Extract Atomic Facts and Foresight Signals ONLY from **user** messages.
+- Lines marked "[CONTEXT ONLY]" are assistant-generated and MUST NOT be used as a source for facts or foresight.
+- Assistant messages provide conversational context only (e.g., understanding what the user is responding to), but NEVER treat assistant claims, assumptions, or summaries as ground truth.
+- If the assistant says "you live in X" but the user only said "I visit X", the fact should be: "visits X", NOT "lives in X".
+- If a user CONFIRMS an assistant statement (e.g., "haan sahi hai", "yes that's right"), THEN extract that confirmed info as a fact.
+- When both speakers are regular people (no [CONTEXT ONLY] tags), extract from ALL speakers equally.
 
 TEMPORAL PRECISION:
 - Use dates from the conversation context to anchor facts.

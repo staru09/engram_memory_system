@@ -117,38 +117,70 @@ export default function App() {
     setInputText('');
     setIsLoading(true);
 
+    const botMessageId = (Date.now() + 1).toString();
+    let firstToken = true;
+
     try {
-      const data = await api.sendMessage(newUserMessage.text, threadIdRef.current!);
-
-      const newBotMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: data.response || 'Message received.',
-        sender: 'bot',
-        timestamp: formatTimestamp(),
-      };
-
-      setMessages(prev => {
-        const updated = prev.map(msg =>
-          msg.id === newUserMessage.id ? { ...msg, status: 'read' as const } : msg
-        );
-        return [...updated, newBotMessage];
-      });
+      await api.streamMessage(
+        newUserMessage.text,
+        threadIdRef.current!,
+        (token) => {
+          if (firstToken) {
+            firstToken = false;
+            setIsLoading(false);
+            // Add bot message with first token
+            setMessages(prev => {
+              const updated = prev.map(msg =>
+                msg.id === newUserMessage.id ? { ...msg, status: 'read' as const } : msg
+              );
+              return [...updated, {
+                id: botMessageId,
+                text: token,
+                sender: 'bot' as const,
+                timestamp: formatTimestamp(),
+              }];
+            });
+          } else {
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === botMessageId ? { ...msg, text: msg.text + token } : msg
+              )
+            );
+          }
+        },
+        () => {
+          // streaming done
+        },
+        (error) => {
+          console.error('Stream failed:', error);
+          setIsLoading(false);
+          setMessages(prev => {
+            const updated = prev.map(msg =>
+              msg.id === newUserMessage.id ? { ...msg, status: 'read' as const } : msg
+            );
+            return [...updated, {
+              id: botMessageId,
+              text: 'Could not reach the backend. Make sure the FastAPI server is running.',
+              sender: 'bot' as const,
+              timestamp: formatTimestamp(),
+            }];
+          });
+        },
+      );
     } catch (error) {
       console.error('Failed to send message:', error);
-      const fallbackMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: 'Could not reach the backend. Make sure the FastAPI server is running.',
-        sender: 'bot',
-        timestamp: formatTimestamp(),
-      };
+      setIsLoading(false);
       setMessages(prev => {
         const updated = prev.map(msg =>
           msg.id === newUserMessage.id ? { ...msg, status: 'read' as const } : msg
         );
-        return [...updated, fallbackMessage];
+        return [...updated, {
+          id: botMessageId,
+          text: 'Could not reach the backend. Make sure the FastAPI server is running.',
+          sender: 'bot' as const,
+          timestamp: formatTimestamp(),
+        }];
       });
-    } finally {
-      setIsLoading(false);
     }
   };
 

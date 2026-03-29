@@ -300,7 +300,9 @@ Return ONLY the JSON or the word null, nothing else."""
 _TEMPORAL_KEYWORDS = re.compile(
     r'\b(kal|parso|aaj|today|yesterday|tomorrow|pehle|pahle|pichle|pichla|'
     r'last\s+week|last\s+month|is\s+hafte|is\s+mahine|ago|din\s+pehle|'
-    r'hafte|mahine|saal|week|month|year|january|february|march|april|may|june|'
+    r'hafte|mahine|saal|'
+    r'\d+\s*(?:din|days?|weeks?|months?|years?)\s*(?:pehle|pahle|ago)|'
+    r'january|february|march|april|may|june|'
     r'july|august|september|october|november|december|'
     r'jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|'
     r'\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b',
@@ -334,7 +336,15 @@ def parse_temporal_query(query: str, current_time_ist: datetime) -> dict | None:
         print(f"  [temporal] Rule-based: {result['reasoning']}")
         return result
 
-    # Fall back to LLM for complex/ambiguous cases
+    # Only fall back to LLM if there's a strong temporal signal (not just a month name in casual chat)
+    # Month names alone in conversational context ("course june me khtm hoga") shouldn't trigger LLM
+    _STRONG_TEMPORAL = re.compile(
+        r'\b(kal|parso|pehle|pahle|pichle|pichla|ago|din\s+pehle|yesterday|tomorrow|last\s+week|last\s+month)\b',
+        re.IGNORECASE
+    )
+    if not _STRONG_TEMPORAL.search(query):
+        return None
+
     print(f"  [temporal] Falling back to LLM...")
     prompt = _TEMPORAL_PROMPT.replace(
         "{current_time_ist}", current_time_ist.strftime("%Y-%m-%d %H:%M")

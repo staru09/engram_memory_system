@@ -1,12 +1,14 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter
 
 import db
 from models import QueryLog
-from agentic_layer.memory_manager import agentic_retrieve
-from agentic_layer.fetch_mem_service import retrieve_fast, compose_context_fast
+from agentic_layer.query_classifier import classify_query
+from agentic_layer.fetch_mem_service import retrieve_simple, retrieve_fast, compose_context, compose_context_fast
+from agentic_layer.vectorize_service import embed_text
 from backend.schemas import QueryRequest
 from backend.gemini import call_gemini_with_tools
 from backend.prompt import build_query_prompt
@@ -17,7 +19,6 @@ router = APIRouter()
 
 
 def _date_str(val):
-    """Convert date/datetime to ISO string for JSON serialization."""
     if val is None:
         return None
     if hasattr(val, 'isoformat'):
@@ -25,9 +26,9 @@ def _date_str(val):
     return str(val)
 
 
-def _build_metadata(raw_result: dict, agentic_result: dict,
+def _build_metadata(raw_result: dict, classification: dict,
                     retrieval_time: float, llm_time: float) -> dict:
-    """Serialize retrieval results into a JSON-safe metadata dict."""
+    retrieval_timing = raw_result.get("timing", {})
     return {
         "facts": [
             {
@@ -41,13 +42,9 @@ def _build_metadata(raw_result: dict, agentic_result: dict,
         ],
         "episodes": [
             {
-                "memcell_id": e["memcell_id"],
+                "memcell_id": e.get("id", e.get("memcell_id")),
                 "episode_text": e.get("episode_text", ""),
-                "relevance_score": e.get("relevance_score", 0),
-                "semantic_sim": e.get("semantic_sim"),
-                "staleness": e.get("staleness"),
                 "conversation_date": _date_str(e.get("conversation_date")),
-                "scene_id": e.get("scene_id"),
             }
             for e in raw_result.get("episodes", [])
         ],
@@ -62,24 +59,17 @@ def _build_metadata(raw_result: dict, agentic_result: dict,
             }
             for fs in raw_result.get("foresight", [])
         ],
-        "scenes": [
-            {
-                "scene_id": s["scene_id"],
-                "best_score": s["best_score"],
-                "fact_ids": s.get("fact_ids", []),
-            }
-            for s in raw_result.get("scenes", [])
-        ],
+        "categories_matched": classification.get("categories", []),
+        "complexity": classification.get("complexity", "COMPLEX"),
         "profile_included": raw_result.get("profile") is not None,
-        "sufficiency": {
-            "is_sufficient": agentic_result.get("is_sufficient", False),
-            "rounds": agentic_result.get("rounds", 1),
-            "reasoning": agentic_result.get("sufficiency", {}).get("reasoning", ""),
-            "missing_information": agentic_result.get("sufficiency", {}).get("missing_information", []),
-        },
         "timing": {
             "total_retrieval_s": round(retrieval_time, 3),
             "llm_response_s": round(llm_time, 3),
+            "classifier_s": classification.get("classifier_s", 0),
+            "embedding_s": retrieval_timing.get("embedding_s", 0),
+            "search_s": retrieval_timing.get("search_s", 0),
+            "foresight_s": retrieval_timing.get("foresight_s", 0),
+            "context_compose_s": retrieval_timing.get("context_compose_s", 0),
         },
     }
 
@@ -102,30 +92,33 @@ def query_memory(request: QueryRequest):
     if request.thread_id:
         recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Run retrieval (no message storing, no ingestion)
+    # 3. Classify query
+    classification = classify_query(request.query)
+    complexity = classification.get("complexity", "COMPLEX")
+    categories = classification.get("categories", [])
+    print(f"  [query] Classified as {complexity}, categories: {categories} ({classification.get('classifier_s', 0)}s)")
+
+    # 4. Route to appropriate retrieval tier (retrieval time excludes classifier)
     retrieval_start = time.time()
-    if request.fast:
-        # Facts-only retrieval — skip scenes, episodes, sufficiency loop
-        raw_result = retrieve_fast(request.query, query_time=query_time.replace(tzinfo=None))
+    if complexity == "NONE":
+        raw_result = retrieve_simple(request.query, categories=categories,
+                                     query_time=query_time.replace(tzinfo=None))
         context = compose_context_fast(raw_result)
-        agentic_result = {
-            "context": context,
-            "is_sufficient": True,
-            "rounds": 1,
-            "result": raw_result,
-            "sufficiency": {},
-        }
+    elif complexity == "SIMPLE":
+        raw_result = retrieve_simple(request.query, categories=categories,
+                                     query_time=query_time.replace(tzinfo=None))
+        context = compose_context_fast(raw_result)
     else:
-        agentic_result = agentic_retrieve(
-            request.query,
-            query_time=query_time.replace(tzinfo=None),
-            verbose=True,
-        )
-        context = agentic_result["context"]
-        raw_result = agentic_result["result"]
+        query_embedding = embed_text(request.query)
+        raw_result = retrieve_fast(request.query,
+                                   query_time=query_time.replace(tzinfo=None),
+                                   categories=categories,
+                                   query_embedding=query_embedding)
+        context = compose_context(raw_result)
+
     retrieval_time = time.time() - retrieval_start
 
-    # 4. Build query-specific prompt
+    # 5. Build query-specific prompt
     prompt = build_query_prompt(
         query=request.query,
         memory_context=context,
@@ -133,15 +126,15 @@ def query_memory(request: QueryRequest):
         query_time=query_time,
     )
 
-    # 4. Call Gemini with tools
+    # 6. Call Gemini with tools
     llm_start = time.time()
     answer = call_gemini_with_tools(prompt)
     llm_time = time.time() - llm_start
 
-    # 5. Build metadata
-    metadata = _build_metadata(raw_result, agentic_result, retrieval_time, llm_time)
+    # 7. Build metadata
+    metadata = _build_metadata(raw_result, classification, retrieval_time, llm_time)
 
-    # 6. Log to query_logs table
+    # 8. Log to query_logs table
     try:
         log = QueryLog(
             thread_id=request.thread_id,

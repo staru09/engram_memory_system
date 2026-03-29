@@ -76,36 +76,43 @@ def update_user_profile():
     return profile
 
 
-def update_category_profiles(affected_categories: set[str] = None):
-    """Rebuild profile sections for affected categories only.
+def _update_single_category(cat_name: str, prompt_template: str) -> str | None:
+    """Update a single category profile. Returns cat_name on success, None on skip."""
+    facts = db.get_active_facts_by_category(cat_name)
+    if not facts:
+        return None
 
-    If affected_categories is None, rebuild all non-empty categories.
-    """
+    existing = db.get_profile_category(cat_name)
+    prev_summary = existing["summary_text"] if existing and existing.get("summary_text") else "None (first time)"
+
+    facts_text = "\n".join(f"- {f['fact_text']}" for f in facts)
+    prompt = prompt_template.replace("{category_name}", cat_name).replace(
+        "{previous_summary}", prev_summary
+    ).replace("{facts_list}", facts_text)
+
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    summary = response.text.strip()
+
+    summary_embedding = embed_text(summary)
+    db.upsert_profile_category(cat_name, summary, len(facts), summary_embedding)
+    print(f"       [{cat_name}] {len(facts)} facts → {len(summary)} chars")
+    return cat_name
+
+
+def update_category_profiles(affected_categories: set[str] = None):
+    """Rebuild profile sections for affected categories in parallel."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     if affected_categories is None:
         affected_categories = db.get_categories_with_facts()
 
     prompt_template = _load_category_prompt()
-    updated = 0
 
-    for cat_name in affected_categories:
-        facts = db.get_active_facts_by_category(cat_name)
-        if not facts:
-            continue
-
-        existing = db.get_profile_category(cat_name)
-        prev_summary = existing["summary_text"] if existing and existing.get("summary_text") else "None (first time)"
-
-        facts_text = "\n".join(f"- {f['fact_text']}" for f in facts)
-        prompt = prompt_template.replace("{category_name}", cat_name).replace(
-            "{previous_summary}", prev_summary
-        ).replace("{facts_list}", facts_text)
-
-        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        summary = response.text.strip()
-
-        summary_embedding = embed_text(summary)
-        db.upsert_profile_category(cat_name, summary, len(facts), summary_embedding)
-        updated += 1
-        print(f"       [{cat_name}] {len(facts)} facts → {len(summary)} chars")
+    with ThreadPoolExecutor(max_workers=len(affected_categories)) as executor:
+        futures = {
+            executor.submit(_update_single_category, cat, prompt_template): cat
+            for cat in affected_categories
+        }
+        updated = sum(1 for f in as_completed(futures) if f.result() is not None)
 
     print(f"       Category profiles updated: {updated}/{len(affected_categories)} categories")
