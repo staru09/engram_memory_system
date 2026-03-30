@@ -34,7 +34,6 @@ def _extract_segment(seg: dict, current_date: str, conversation_summary: str = N
         "episode_text": result["episode"],
         "atomic_facts": result["atomic_facts"],
         "foresight": result.get("foresight", []),
-        "scene_hint": result.get("scene_hint"),
     }
 
 
