@@ -99,15 +99,18 @@ TEMPORAL PRECISION:
 
 Output as JSON:
 {
-  "episode": "Third-person narrative here...",
+  "episode": "On May 8, 2023, Alice shared her experience at a local support group and discussed her interest in becoming a counselor. Bob described his painting hobby as a creative outlet for relaxation.",
   "atomic_facts": [
-    {"text": "fact text here", "category": "category_name"}
+    {"text": "Alice attended a local support group on May 8, 2023.", "category": "experiences"},
+    {"text": "Alice is interested in pursuing a career in counseling.", "category": "goals"},
+    {"text": "Bob paints as a creative outlet for relaxation.", "category": "activities"},
+    {"text": "Bob has been painting since 2016.", "category": "activities"}
   ],
   "foresight": [
     {
-      "description": "What is expected to happen or is temporarily true",
-      "valid_from": "YYYY-MM-DD",
-      "valid_until": "YYYY-MM-DD or null"
+      "description": "Alice plans to research counseling certification programs.",
+      "valid_from": "2023-05-08",
+      "valid_until": null
     }
   ]
 }

@@ -14,7 +14,7 @@ _BATCH_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "conflic
 
 # Facts with similarity above this threshold are checked for contradiction.
 
-CONFLICT_SIMILARITY_THRESHOLD = 0.75
+CONFLICT_SIMILARITY_THRESHOLD = 0.7
 
 
 def _load_prompt():
