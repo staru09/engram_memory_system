@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
-from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog, ProfileCategory
+from models import MemCell, AtomicFact, Foresight, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog
 
 _pool = None
 
@@ -48,21 +48,12 @@ def init_schema():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS memscenes (
-            id              SERIAL PRIMARY KEY,
-            theme_label     VARCHAR(200),
-            summary         TEXT,
-            created_at      TIMESTAMP DEFAULT NOW(),
-            updated_at      TIMESTAMP DEFAULT NOW()
-        );
-
         CREATE TABLE IF NOT EXISTS memcells (
             id              SERIAL PRIMARY KEY,
             episode_text    TEXT NOT NULL,
             raw_dialogue    TEXT,
             created_at      TIMESTAMP DEFAULT NOW(),
             source_id       VARCHAR(100),
-            scene_id        INTEGER REFERENCES memscenes(id),
             conversation_date DATE,
             embedding       FLOAT8[]
         );
@@ -136,17 +127,6 @@ def init_schema():
             query_time          TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS profile_categories (
-            id              SERIAL PRIMARY KEY,
-            category_name   VARCHAR(100) NOT NULL UNIQUE,
-            description     TEXT DEFAULT '',
-            summary_text    TEXT NOT NULL DEFAULT '',
-            fact_count      INTEGER DEFAULT 0,
-            embedding       FLOAT8[],
-            created_at      TIMESTAMP DEFAULT NOW(),
-            updated_at      TIMESTAMP DEFAULT NOW()
-        );
-
         CREATE TABLE IF NOT EXISTS conversation_summaries (
             id              SERIAL PRIMARY KEY,
             summary_text    TEXT NOT NULL DEFAULT '',
@@ -184,82 +164,20 @@ def init_schema():
     seed_default_categories()
 
 
-# ── MemScene CRUD ──
-
-def insert_memscene(scene: MemScene) -> int:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO memscenes (theme_label, summary) VALUES (%s, %s) RETURNING id",
-        (scene.theme_label, scene.summary)
-    )
-    scene_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-    return scene_id
-
-
-def update_memscene_summary(scene_id: int, summary: str, theme_label: str = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    if theme_label:
-        cur.execute(
-            "UPDATE memscenes SET summary = %s, theme_label = %s, updated_at = NOW() WHERE id = %s",
-            (summary, theme_label, scene_id)
-        )
-    else:
-        cur.execute(
-            "UPDATE memscenes SET summary = %s, updated_at = NOW() WHERE id = %s",
-            (summary, scene_id)
-        )
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-
-
 # ── MemCell CRUD ──
 
 def insert_memcell(cell: MemCell) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO memcells (episode_text, raw_dialogue, source_id, scene_id, conversation_date) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-        (cell.episode_text, cell.raw_dialogue, cell.source_id, cell.scene_id, cell.conversation_date)
+        "INSERT INTO memcells (episode_text, raw_dialogue, source_id, conversation_date) VALUES (%s, %s, %s, %s) RETURNING id",
+        (cell.episode_text, cell.raw_dialogue, cell.source_id, cell.conversation_date)
     )
     cell_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
     release_connection(conn)
     return cell_id
-
-
-def update_memcell_scene(memcell_id: int, scene_id: int):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE memcells SET scene_id = %s WHERE id = %s",
-        (scene_id, memcell_id)
-    )
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-
-
-def get_memcells_by_scene(scene_id: int, query_time=None) -> list[dict]:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    if query_time:
-        cur.execute(
-            "SELECT * FROM memcells WHERE scene_id = %s AND conversation_date <= %s ORDER BY created_at",
-            (scene_id, query_time)
-        )
-    else:
-        cur.execute("SELECT * FROM memcells WHERE scene_id = %s ORDER BY created_at", (scene_id,))
-    rows = cur.fetchall()
-    cur.close()
-    release_connection(conn)
-    return rows
 
 
 # ── AtomicFact CRUD ──
@@ -303,50 +221,60 @@ def _to_or_query(query: str) -> str:
 
 
 def keyword_search_facts(query: str, top_k: int = 10, query_time=None,
-                         date_filter: dict = None) -> list[dict]:
+                         date_filter: dict = None, exclude_ids: set = None) -> list[dict]:
     """Full-text search on atomic_facts using websearch_to_tsquery with OR logic.
     Any matching token returns results (not all tokens required).
     ts_rank naturally scores documents with more matching tokens higher.
 
     Args:
         date_filter: Optional {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}
+        exclude_ids: Optional set of fact IDs to exclude from results
     """
     or_query = _to_or_query(query)
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    exclude_clause = ""
+    exclude_params = []
+    if exclude_ids:
+        exclude_clause = " AND id != ALL(%s)"
+        exclude_params = [list(exclude_ids)]
+
     if date_filter:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE conversation_date BETWEEN %s AND %s
               AND is_active = TRUE
               AND fact_tsv @@ websearch_to_tsquery('english', %s)
+              {exclude_clause}
             ORDER BY rank DESC
             LIMIT %s
-        """, (or_query, date_filter["date_from"], date_filter["date_to"], or_query, top_k))
+        """, (or_query, date_filter["date_from"], date_filter["date_to"], or_query, *exclude_params, top_k))
     elif query_time:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE conversation_date <= %s
               AND (superseded_on IS NULL OR superseded_on > %s)
               AND fact_tsv @@ websearch_to_tsquery('english', %s)
+              {exclude_clause}
             ORDER BY rank DESC
             LIMIT %s
-        """, (or_query, query_time, query_time, or_query, top_k))
+        """, (or_query, query_time, query_time, or_query, *exclude_params, top_k))
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE is_active = TRUE
               AND fact_tsv @@ websearch_to_tsquery('english', %s)
+              {exclude_clause}
             ORDER BY rank DESC
             LIMIT %s
-        """, (or_query, or_query, top_k))
+        """, (or_query, or_query, *exclude_params, top_k))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)
@@ -506,150 +434,6 @@ def get_user_profile() -> UserProfile | None:
 
 
 
-# ── Profile Categories ──────────────────────────────────────────────────────
-
-DEFAULT_CATEGORIES = [
-    ("personal_info", "Name, age, gender, nationality, origin, identity"),
-    ("preferences", "Likes, dislikes, favorites (food, books, music, etc.)"),
-    ("relationships", "Family, friends, partners, social connections"),
-    ("activities", "Hobbies, sports, creative pursuits, regular activities"),
-    ("goals", "Future plans, aspirations, deadlines, intentions"),
-    ("experiences", "Past events, trips, milestones, achievements"),
-    ("knowledge", "Skills, expertise, education, certifications"),
-    ("opinions", "Views, beliefs, attitudes, reactions"),
-    ("habits", "Routines, patterns, lifestyle choices, health"),
-    ("work_life", "Career, job, professional development, workplace"),
-]
-
-
-def seed_default_categories():
-    """Insert default categories if they don't already exist."""
-    conn = get_connection()
-    cur = conn.cursor()
-    for name, desc in DEFAULT_CATEGORIES:
-        cur.execute(
-            """INSERT INTO profile_categories (category_name, description)
-               VALUES (%s, %s) ON CONFLICT (category_name) DO NOTHING""",
-            (name, desc)
-        )
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-
-
-def get_profile_category(category_name: str) -> dict | None:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM profile_categories WHERE category_name = %s", (category_name,))
-    row = cur.fetchone()
-    cur.close()
-    release_connection(conn)
-    return dict(row) if row else None
-
-
-def get_profile_categories(category_names: list[str]) -> list[dict]:
-    """Fetch profile category summaries by name."""
-    if not category_names:
-        return []
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        """SELECT category_name, summary_text, fact_count
-           FROM profile_categories
-           WHERE category_name = ANY(%s) AND summary_text != ''""",
-        (category_names,)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    release_connection(conn)
-    return [dict(r) for r in rows]
-
-
-def get_all_category_embeddings() -> list[dict]:
-    """Fetch all category embeddings for in-memory cache (used by retrieval)."""
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        "SELECT category_name, embedding FROM profile_categories WHERE embedding IS NOT NULL"
-    )
-    rows = cur.fetchall()
-    cur.close()
-    release_connection(conn)
-    return [dict(r) for r in rows]
-
-
-def upsert_profile_category(category_name: str, summary_text: str,
-                             fact_count: int, embedding: list[float] = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """INSERT INTO profile_categories (category_name, summary_text, fact_count, embedding)
-           VALUES (%s, %s, %s, %s)
-           ON CONFLICT (category_name) DO UPDATE SET
-             summary_text = EXCLUDED.summary_text,
-             fact_count = EXCLUDED.fact_count,
-             embedding = EXCLUDED.embedding,
-             updated_at = NOW()""",
-        (category_name, summary_text, fact_count, embedding)
-    )
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-
-
-def get_active_facts_by_category(category_name: str) -> list[dict]:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        """SELECT id, fact_text, conversation_date
-           FROM atomic_facts
-           WHERE category_name = %s AND is_active = TRUE
-           ORDER BY conversation_date DESC""",
-        (category_name,)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    release_connection(conn)
-    return [dict(r) for r in rows]
-
-
-def get_categories_with_facts() -> list[str]:
-    """Return category names that have at least one active fact."""
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        """SELECT DISTINCT category_name FROM atomic_facts
-           WHERE is_active = TRUE AND category_name IS NOT NULL"""
-    )
-    result = [row[0] for row in cur.fetchall()]
-    cur.close()
-    release_connection(conn)
-    return result
-
-
-def get_or_create_category(category_name: str, description: str = "") -> dict:
-    """Get existing category or create a new one."""
-    existing = get_profile_category(category_name)
-    if existing:
-        return existing
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        """INSERT INTO profile_categories (category_name, description)
-           VALUES (%s, %s)
-           ON CONFLICT (category_name) DO NOTHING
-           RETURNING *""",
-        (category_name, description)
-    )
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-    if row:
-        return dict(row)
-    return get_profile_category(category_name)
-
-
 def get_memcell_by_id(memcell_id: int) -> dict | None:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -672,24 +456,6 @@ def get_memcells_by_ids(memcell_ids: list[int]) -> dict[int, dict]:
     release_connection(conn)
     return {row["id"]: row for row in rows}
 
-
-def get_memcells_by_scenes(scene_ids: list[int], query_time=None) -> list[dict]:
-    """Batch fetch memcells for multiple scenes in a single query."""
-    if not scene_ids:
-        return []
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    if query_time:
-        cur.execute(
-            "SELECT * FROM memcells WHERE scene_id = ANY(%s) AND conversation_date <= %s ORDER BY created_at",
-            (list(scene_ids), query_time)
-        )
-    else:
-        cur.execute("SELECT * FROM memcells WHERE scene_id = ANY(%s) ORDER BY created_at", (list(scene_ids),))
-    rows = cur.fetchall()
-    cur.close()
-    release_connection(conn)
-    return rows
 
 
 def get_fact_by_id(fact_id: int) -> dict | None:
@@ -876,8 +642,6 @@ def get_system_stats() -> dict:
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM memcells")
     total_memcells = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM memscenes")
-    total_scenes = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM conflicts")
     total_conflicts = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM atomic_facts WHERE is_active = TRUE")
@@ -888,7 +652,6 @@ def get_system_stats() -> dict:
     release_connection(conn)
     return {
         "total_memcells": total_memcells,
-        "total_scenes": total_scenes,
         "total_conflicts": total_conflicts,
         "active_facts": active_facts,
         "total_facts": total_facts,

@@ -16,18 +16,6 @@ class AtomicFact:
 
 
 @dataclass
-class ProfileCategory:
-    id: Optional[int] = None
-    category_name: str = ""
-    description: str = ""
-    summary_text: str = ""
-    fact_count: int = 0
-    embedding: Optional[list[float]] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-
-@dataclass
 class Foresight:
     id: Optional[int] = None
     memcell_id: Optional[int] = None
@@ -44,19 +32,9 @@ class MemCell:
     raw_dialogue: str = ""
     created_at: Optional[datetime] = None
     source_id: str = ""
-    scene_id: Optional[int] = None
     conversation_date: Optional[str] = None
     facts: list[AtomicFact] = field(default_factory=list)
     foresight: list[Foresight] = field(default_factory=list)
-
-
-@dataclass
-class MemScene:
-    id: Optional[int] = None
-    theme_label: str = ""
-    summary: str = ""
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
 
 
 @dataclass
