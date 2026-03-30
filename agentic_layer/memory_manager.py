@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timezone, timedelta
 from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
-from agentic_layer.fetch_mem_service import retrieve, compose_context
+from agentic_layer.fetch_mem_service import retrieve_fast as retrieve, compose_context
 from agentic_layer.retrieval_utils import hybrid_search
 from agentic_layer.temporal_parser import parse_temporal_query
 

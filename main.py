@@ -259,12 +259,20 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
         for fid, ft, emb in zip(p1["fact_ids"], fact_texts, p1["embeddings"]):
             all_facts_with_embeddings.append({"fact_id": fid, "fact_text": ft, "embedding": emb})
 
+    # Skip if too few pre-existing facts (nothing to conflict with)
+    stats = db.get_system_stats()
+    pre_existing = stats.get("active_facts", 0) - len(all_batch_fact_ids)
+
     phase2_start = time.time()
-    print(f"       [Phase 2] Running conflict detection ({len(all_facts_with_embeddings)} facts, batch-combined)...")
-    total_conflicts = await loop.run_in_executor(
-        _executor, detect_conflicts_batch, all_facts_with_embeddings, interactive,
-        current_date, all_batch_fact_ids
-    )
+    if pre_existing < 10:
+        print(f"       [Phase 2] Skipped conflict detection ({pre_existing} pre-existing facts)")
+        total_conflicts = 0
+    else:
+        print(f"       [Phase 2] Running conflict detection ({len(all_facts_with_embeddings)} facts, {pre_existing} pre-existing)...")
+        total_conflicts = await loop.run_in_executor(
+            _executor, detect_conflicts_batch, all_facts_with_embeddings, interactive,
+            current_date, all_batch_fact_ids
+        )
     print(f"       [Phase 2] Complete: {total_conflicts} conflicts in {time.time() - phase2_start:.1f}s")
 
     total_storage = time.time() - phase1_start
