@@ -160,9 +160,6 @@ def init_schema():
     cur.close()
     release_connection(conn)
 
-    # Seed default categories
-    seed_default_categories()
-
 
 # ── MemCell CRUD ──
 
