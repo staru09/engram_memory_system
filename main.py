@@ -384,7 +384,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         return time.time() - t
 
     def _run_session_summary():
-        """Store per-session summary with embedding for retrieval use."""
+        """Store per-session summary."""
         t = time.time()
         if not all_new_episodes:
             return 0.0
@@ -398,8 +398,7 @@ Return ONLY the summary text, no JSON or formatting."""
         try:
             response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
             summary = response.text.strip()
-            summary_embedding = embed_text(summary)
-            db.insert_session_summary(source_id, current_date, summary, summary_embedding)
+            db.insert_session_summary(source_id, current_date, summary)
             print(f"  [session-summary] Stored ({len(summary)} chars)")
         except Exception as e:
             print(f"  [session-summary] Failed: {e}")
