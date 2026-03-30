@@ -383,37 +383,34 @@ def retrieve(query: str, query_time: datetime = None,
     }
 
 
-FAST_FACTS_LIMIT = 10
+FAST_FACTS_LIMIT = 5
 FAST_FACT_MIN_SCORE = 0.005  # drop facts below this RRF score (noise)
 FAST_FORESIGHT_MIN_SIM = 0.7  # drop foresight below this query similarity
 
 
-def retrieve_simple(query: str, categories: list[str] = None,
-                    query_time: datetime = None) -> dict:
-    """Tier-1 retrieval: category summaries + user profile only. No search."""
+def retrieve_simple(query: str, query_time: datetime = None) -> dict:
+    """Tier-1 retrieval: profile + all category summaries + conversation summary. No search."""
     IST = timezone(timedelta(hours=5, minutes=30))
     if query_time is None:
         query_time = datetime.now(IST).replace(tzinfo=None)
 
     retrieval_start = time.time()
 
-    t0 = time.time()
-    category_profiles = db.get_profile_categories(categories) if categories else []
-    cat_time = time.time() - t0
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        profile_future = executor.submit(db.get_user_profile)
+        categories_future = executor.submit(db.get_profile_categories)
 
-    t0 = time.time()
-    profile = db.get_user_profile()
-    profile_time = time.time() - t0
+        profile = profile_future.result()
+        category_profiles = categories_future.result()
 
     context_compose_s = round(time.time() - retrieval_start, 3)
-    print(f"  [simple-retrieval] categories: {cat_time:.3f}s ({len(category_profiles)}), profile: {profile_time:.3f}s, total: {context_compose_s}s")
+    print(f"  [simple-retrieval] profile + {len(category_profiles)} categories: {context_compose_s}s (parallel)")
 
     return {
         "episodes": [],
         "foresight": [],
         "profile": profile,
         "facts": [],
-        "scenes": [],
         "category_profiles": category_profiles,
         "timing": {
             "embedding_s": 0,
@@ -560,7 +557,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
     episodes = list(memcells_map.values())
     print(f"  [retrieval] Episodes from {len(memcell_ids)} memcells: {len(episodes)} ({time.time() - t0:.2f}s)")
 
-    # Profile
+    # Profile + conversation summary
     is_historical = (date_filter is not None
                      and not is_mixed
                      and effective_query_time.date() != datetime.now(IST).date())
@@ -578,101 +575,61 @@ def retrieve_fast(query: str, query_time: datetime = None,
         "foresight": active_foresight,
         "profile": profile,
         "facts": top_facts[:top_k_facts],
-        "scenes": [],
         "category_profiles": category_profiles,
         "timing": step_timing,
     }
 
 
 def compose_context_fast(retrieval_result: dict) -> str:
-    """
-    Compose context from facts + foresight + profile + category profiles (no episodes).
-    Hierarchical: high-level context first, then detailed evidence.
-    """
+    """Compose context from profile + category summaries + conversation summary (fast mode)."""
     parts = []
 
-    # === HIGH-LEVEL CONTEXT ===
-    parts.append("=== HIGH-LEVEL CONTEXT ===")
-
-    # User profile (general overview — always included)
+    # User profile
     profile = retrieval_result.get("profile")
     if profile:
+        parts.append("=== USER PROFILE ===")
         if profile.explicit_facts:
             parts.append("Known facts: " + "; ".join(profile.explicit_facts))
         if profile.implicit_traits:
             parts.append("Traits: " + "; ".join(profile.implicit_traits))
         parts.append("")
 
-    # Category profile sections (relevant categories only)
+    # Category summaries
     category_profiles = retrieval_result.get("category_profiles", [])
     if category_profiles:
+        parts.append("=== CATEGORY SUMMARIES ===")
         for cp in category_profiles:
-            parts.append(f"[{cp['category_name']}]")
-            parts.append(cp['summary_text'])
+            parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
         parts.append("")
 
-    # === DETAILED EVIDENCE ===
-    parts.append("=== DETAILED EVIDENCE ===")
-
-    # Top matching facts
-    facts = retrieval_result.get("facts", [])
-    if facts:
-        fact_ids = [f["fact_id"] for f in facts]
-        superseded_map = db.get_superseded_map(fact_ids)
-        fact_ids_in_context = set(fact_ids)
-
-        facts = [
-            f for f in facts
-            if not (f["fact_id"] in superseded_map and superseded_map[f["fact_id"]] in fact_ids_in_context)
-        ]
-
-        for f in facts[:FAST_FACTS_LIMIT]:
-            date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
-            parts.append(f"- {f['fact_text']}{date_tag} (score: {f['rrf_score']:.4f})")
-        parts.append("")
-
-    # Active foresight
-    foresight = retrieval_result.get("foresight", [])
-    if foresight:
-        for fs in foresight:
-            source = fs["source_date"].strftime("%Y-%m-%d") if hasattr(fs.get("source_date"), 'strftime') else (str(fs["source_date"]) if fs.get("source_date") else "unknown")
-            until = fs["valid_until"].strftime("%Y-%m-%d") if fs.get("valid_until") else "indefinite"
-            parts.append(f"- {fs['description']} (from: {source}, valid until: {until})")
 
     return "\n".join(parts)
 
 
 def compose_context(retrieval_result: dict) -> str:
-    """
-    Compose retrieved information into a text context block.
-    Hierarchical: high-level context first, then detailed evidence.
-    """
+    """Compose context: profile + categories + summary + episodes + facts + foresight."""
     parts = []
 
-    # === HIGH-LEVEL CONTEXT ===
-    parts.append("=== HIGH-LEVEL CONTEXT ===")
-
-    # User profile (general overview)
+    # User profile
     profile = retrieval_result.get("profile")
     if profile:
+        parts.append("=== USER PROFILE ===")
         if profile.explicit_facts:
             parts.append("Known facts: " + "; ".join(profile.explicit_facts))
         if profile.implicit_traits:
             parts.append("Traits: " + "; ".join(profile.implicit_traits))
         parts.append("")
 
-    # Category profile sections (relevant categories only)
+    # Category summaries
     category_profiles = retrieval_result.get("category_profiles", [])
     if category_profiles:
+        parts.append("=== CATEGORY SUMMARIES ===")
         for cp in category_profiles:
-            parts.append(f"[{cp['category_name']}]")
-            parts.append(cp['summary_text'])
+            parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
         parts.append("")
 
-    # === DETAILED EVIDENCE ===
-    parts.append("=== DETAILED EVIDENCE ===")
 
-    # Relevant episodes
+    # Episodes
     episodes = retrieval_result.get("episodes", [])
     if episodes:
         for i, ep in enumerate(episodes, 1):
