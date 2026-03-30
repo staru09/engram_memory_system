@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
-from models import MemCell, AtomicFact, Foresight, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog
+from models import MemCell, AtomicFact, Foresight, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog, ProfileCategory
 
 _pool = None
 
@@ -125,6 +125,16 @@ def init_schema():
             retrieval_metadata  JSONB,
             created_at          TIMESTAMP DEFAULT NOW(),
             query_time          TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS profile_categories (
+            id              SERIAL PRIMARY KEY,
+            category_name   VARCHAR(100) NOT NULL UNIQUE,
+            summary_text    TEXT NOT NULL DEFAULT '',
+            fact_count      INTEGER DEFAULT 0,
+            embedding       FLOAT8[],
+            created_at      TIMESTAMP DEFAULT NOW(),
+            updated_at      TIMESTAMP DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS conversation_summaries (
@@ -429,6 +439,76 @@ def get_user_profile() -> UserProfile | None:
         updated_at=row["updated_at"]
     )
 
+
+
+# ── Profile Categories CRUD ──
+
+DEFAULT_CATEGORIES = [
+    "personal_info", "preferences", "relationships", "activities", "goals",
+    "experiences", "knowledge", "opinions", "habits", "work_life",
+]
+
+
+def get_profile_category(category_name: str) -> dict | None:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM profile_categories WHERE category_name = %s", (category_name,))
+    row = cur.fetchone()
+    cur.close()
+    release_connection(conn)
+    return dict(row) if row else None
+
+
+def get_profile_categories(category_names: list[str] = None) -> list[dict]:
+    """Fetch profile category summaries. If no names given, fetch all with non-empty summaries."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    if category_names:
+        cur.execute(
+            """SELECT category_name, summary_text, fact_count
+               FROM profile_categories
+               WHERE category_name = ANY(%s) AND summary_text != ''""",
+            (category_names,)
+        )
+    else:
+        cur.execute(
+            "SELECT category_name, summary_text, fact_count FROM profile_categories WHERE summary_text != ''"
+        )
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def get_all_category_embeddings() -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT category_name, embedding FROM profile_categories WHERE embedding IS NOT NULL"
+    )
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def upsert_profile_category(category_name: str, summary_text: str,
+                             fact_count: int, embedding: list[float] = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO profile_categories (category_name, summary_text, fact_count, embedding)
+           VALUES (%s, %s, %s, %s)
+           ON CONFLICT (category_name) DO UPDATE SET
+             summary_text = EXCLUDED.summary_text,
+             fact_count = EXCLUDED.fact_count,
+             embedding = EXCLUDED.embedding,
+             updated_at = NOW()""",
+        (category_name, summary_text, fact_count, embedding)
+    )
+    conn.commit()
+    cur.close()
+    release_connection(conn)
 
 
 def get_memcell_by_id(memcell_id: int) -> dict | None:

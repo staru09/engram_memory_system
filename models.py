@@ -16,6 +16,17 @@ class AtomicFact:
 
 
 @dataclass
+class ProfileCategory:
+    id: Optional[int] = None
+    category_name: str = ""
+    summary_text: str = ""
+    fact_count: int = 0
+    embedding: Optional[list[float]] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+@dataclass
 class Foresight:
     id: Optional[int] = None
     memcell_id: Optional[int] = None

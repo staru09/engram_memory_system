@@ -9,10 +9,11 @@ from memory_layer.memcell_extractor import extract_segments
 from memory_layer.episode_extractor import process_segment
 from memory_layer.storage import store_batch
 from memory_layer.profile_extractor import (
-    update_user_profile,
+    update_user_profile, update_category_profiles,
     rebuild_conversation_summary, build_session_summary,
 )
 from agentic_layer.vectorize_service import embed_texts
+from agentic_layer.fetch_mem_service import invalidate_category_cache
 
 EXTRACTION_BATCH_SIZE = 10
 BATCH_SLEEP = 0
@@ -86,9 +87,17 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     print(f"\n  Pipeline complete in {time.time() - pipeline_start:.1f}s")
 
-    # Post-pipeline: summary, session_summary, profile — all independent
+    # Post-pipeline: summary, session_summary, profile, categories — all independent
+    new_facts_by_category = {}
+    for r in all_results:
+        for pf in r.get("parsed_facts", []):
+            cat = pf.get("category", "general")
+            if cat not in new_facts_by_category:
+                new_facts_by_category[cat] = []
+            new_facts_by_category[cat].append(pf["text"])
+
     post_start = time.time()
-    print(f"\n[post-pipeline] Running summary + session_summary + profile in parallel...")
+    print(f"\n[post-pipeline] Running summary + session_summary + profile + categories in parallel...")
 
     def _run_summary():
         t = time.time()
@@ -106,17 +115,26 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         update_user_profile(new_facts=all_new_facts if all_new_facts else None)
         return time.time() - t
 
-    with ThreadPoolExecutor(max_workers=3) as post_executor:
+    def _run_categories():
+        t = time.time()
+        if new_facts_by_category:
+            update_category_profiles(new_facts_by_category)
+            invalidate_category_cache()
+        return time.time() - t
+
+    with ThreadPoolExecutor(max_workers=4) as post_executor:
         summary_future = post_executor.submit(_run_summary)
         session_summary_future = post_executor.submit(_run_session_summary)
         profile_future = post_executor.submit(_run_profile)
+        category_future = post_executor.submit(_run_categories)
 
         summary_time = summary_future.result()
         session_summary_time = session_summary_future.result()
         profile_time = profile_future.result()
+        category_time = category_future.result()
 
     post_total = time.time() - post_start
-    print(f"  [post-pipeline] Summary: {summary_time:.1f}s | Session: {session_summary_time:.1f}s | Profile: {profile_time:.1f}s | Total: {post_total:.1f}s (parallel)")
+    print(f"  [post-pipeline] Summary: {summary_time:.1f}s | Session: {session_summary_time:.1f}s | Profile: {profile_time:.1f}s | Categories: {category_time:.1f}s | Total: {post_total:.1f}s (parallel)")
 
     total_memcells = len(all_results)
     total_conflicts = sum(r["conflicts"] for r in all_results)
@@ -133,6 +151,7 @@ def reset_databases():
     cur.execute("""
         DROP TABLE IF EXISTS conversation_summaries CASCADE;
         DROP TABLE IF EXISTS session_summaries CASCADE;
+        DROP TABLE IF EXISTS profile_categories CASCADE;
         DROP TABLE IF EXISTS conflicts CASCADE;
         DROP TABLE IF EXISTS foresight CASCADE;
         DROP TABLE IF EXISTS atomic_facts CASCADE;

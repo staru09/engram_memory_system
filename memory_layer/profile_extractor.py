@@ -95,10 +95,29 @@ def _update_single_category(cat_name: str, new_facts: list[str], prompt_template
     return cat_name
 
 
+VALID_CATEGORIES = {
+    "personal_info", "preferences", "relationships", "activities", "goals",
+    "experiences", "knowledge", "opinions", "habits", "work_life",
+}
+
+
 def update_category_profiles(new_facts_by_category: dict[str, list[str]]):
-    """Update category profiles incrementally with only new facts, in parallel."""
+    """Update category profiles incrementally with only new facts, in parallel.
+    Only processes facts from the 10 predefined categories."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    if not new_facts_by_category:
+        return
+
+    # Map unknown categories to the closest valid one
+    cleaned = {}
+    for cat, facts in new_facts_by_category.items():
+        if cat in VALID_CATEGORIES:
+            cleaned.setdefault(cat, []).extend(facts)
+        else:
+            # Default unknown categories to "general" bucket → personal_info
+            cleaned.setdefault("personal_info", []).extend(facts)
+    new_facts_by_category = cleaned
     if not new_facts_by_category:
         return
 

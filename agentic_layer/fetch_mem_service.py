@@ -1,4 +1,5 @@
 import time
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from config import RETRIEVAL_TOP_K
@@ -13,6 +14,55 @@ from agentic_layer.temporal_parser import parse_temporal_query
 FAST_FACTS_LIMIT = 10
 FAST_FACT_MIN_SCORE = 0.005
 FAST_FORESIGHT_MIN_SIM = 0.7
+
+# Category detection
+CATEGORY_SIM_THRESHOLD = 0.25
+CATEGORY_TOP_K = 3
+_category_cache = None
+
+
+def _load_category_cache():
+    global _category_cache
+    rows = db.get_all_category_embeddings()
+    _category_cache = []
+    for r in rows:
+        if r["embedding"]:
+            _category_cache.append({
+                "category_name": r["category_name"],
+                "embedding": np.array(r["embedding"]),
+            })
+
+
+def invalidate_category_cache():
+    global _category_cache
+    _category_cache = None
+
+
+def _detect_query_categories(query_embedding: list[float]) -> list[str]:
+    """Detect relevant categories by cosine similarity against category embeddings."""
+    global _category_cache
+    if _category_cache is None:
+        _load_category_cache()
+
+    if not _category_cache:
+        return []
+
+    query_vec = np.array(query_embedding)
+    query_norm = np.linalg.norm(query_vec)
+    if query_norm == 0:
+        return []
+
+    scores = []
+    for cat in _category_cache:
+        cat_norm = np.linalg.norm(cat["embedding"])
+        if cat_norm == 0:
+            continue
+        similarity = float(np.dot(query_vec, cat["embedding"]) / (query_norm * cat_norm))
+        if similarity >= CATEGORY_SIM_THRESHOLD:
+            scores.append((cat["category_name"], similarity))
+
+    scores.sort(key=lambda x: -x[1])
+    return [name for name, _ in scores[:CATEGORY_TOP_K]]
 
 
 def _merge_fact_results(list_a: list[dict], list_b: list[dict]) -> list[dict]:
@@ -37,14 +87,19 @@ def retrieve_simple(query: str, query_time: datetime = None) -> dict:
     profile = db.get_user_profile()
     profile_time = time.time() - t0
 
+    t0 = time.time()
+    conversation_summary = db.get_conversation_summary()
+    summary_time = time.time() - t0
+
     context_compose_s = round(time.time() - retrieval_start, 3)
-    print(f"  [simple-retrieval] profile: {profile_time:.3f}s, total: {context_compose_s}s")
+    print(f"  [simple-retrieval] profile: {profile_time:.3f}s, summary: {summary_time:.3f}s, total: {context_compose_s}s")
 
     return {
         "episodes": [],
         "foresight": [],
         "profile": profile,
         "facts": [],
+        "conversation_summary": conversation_summary,
         "timing": {
             "embedding_s": 0,
             "search_s": 0,
@@ -97,15 +152,24 @@ def retrieve_fast(query: str, query_time: datetime = None,
     step_timing["embedding_s"] = round(time.time() - t0, 3)
     print(f"  [retrieval] Embed query: {step_timing['embedding_s']}s")
 
-    # Step 2: Launch foresight in parallel with search
-    parallel_executor = ThreadPoolExecutor(max_workers=1)
+    # Step 1b: Detect relevant categories
+    relevant_cats = _detect_query_categories(query_embedding)
+    if relevant_cats:
+        print(f"  [retrieval] Categories: {relevant_cats}")
+
+    # Step 2: Launch foresight + category fetch in parallel with search
+    parallel_executor = ThreadPoolExecutor(max_workers=2)
 
     def _run_foresight():
         t = time.time()
         result = filter_active_foresight(effective_query_time, query_embedding=query_embedding)
         return result, time.time() - t
 
+    def _run_category_fetch():
+        return db.get_profile_categories(relevant_cats) if relevant_cats else []
+
     foresight_future = parallel_executor.submit(_run_foresight)
+    category_future = parallel_executor.submit(_run_category_fetch)
 
     # Step 3: Hybrid search (keyword + vector → RRF)
     t0 = time.time()
@@ -129,12 +193,13 @@ def retrieve_fast(query: str, query_time: datetime = None,
 
     if not top_facts:
         active_foresight, foresight_duration = foresight_future.result()
+        category_profiles = category_future.result()
         parallel_executor.shutdown(wait=False)
         step_timing["foresight_s"] = round(foresight_duration, 3)
         step_timing["context_compose_s"] = 0
         print(f"  [retrieval] No facts found. Total: {time.time() - retrieval_start:.2f}s")
         return {"episodes": [], "foresight": active_foresight, "profile": None,
-                "facts": [], "timing": step_timing}
+                "facts": [], "category_profiles": category_profiles, "timing": step_timing}
 
     # Fact deduplication
     before_dedup = len(top_facts)
@@ -149,10 +214,13 @@ def retrieve_fast(query: str, query_time: datetime = None,
         if len(top_facts) < before_score_filter:
             print(f"  [retrieval] Score filter: {before_score_filter} → {len(top_facts)} facts")
 
-    # Collect foresight
+    # Collect foresight + categories
     active_foresight, foresight_duration = foresight_future.result()
+    category_profiles = category_future.result()
     parallel_executor.shutdown(wait=False)
     step_timing["foresight_s"] = round(foresight_duration, 3)
+    if category_profiles:
+        print(f"  [retrieval] Category profiles: {[cp['category_name'] for cp in category_profiles]}")
 
     # Filter foresight by query similarity
     before_foresight_filter = len(active_foresight)
@@ -168,11 +236,12 @@ def retrieve_fast(query: str, query_time: datetime = None,
     episodes = list(memcells_map.values())
     print(f"  [retrieval] Episodes from {len(memcell_ids)} memcells: {len(episodes)} ({time.time() - t0:.2f}s)")
 
-    # Profile
+    # Profile + conversation summary
     is_historical = (date_filter is not None
                      and not is_mixed
                      and effective_query_time.date() != datetime.now(IST).date())
     profile = None if is_historical else db.get_user_profile()
+    conversation_summary = db.get_conversation_summary()
 
     step_timing["context_compose_s"] = round(time.time() - t0, 3)
 
@@ -185,13 +254,15 @@ def retrieve_fast(query: str, query_time: datetime = None,
         "episodes": episodes,
         "foresight": active_foresight,
         "profile": profile,
+        "conversation_summary": conversation_summary,
+        "category_profiles": category_profiles,
         "facts": top_facts[:top_k_facts],
         "timing": step_timing,
     }
 
 
 def compose_context_fast(retrieval_result: dict) -> str:
-    """Compose context from profile only (fast mode)."""
+    """Compose context from profile + conversation summary + category profiles (fast mode)."""
     parts = []
 
     profile = retrieval_result.get("profile")
@@ -201,6 +272,19 @@ def compose_context_fast(retrieval_result: dict) -> str:
             parts.append("Known facts: " + "; ".join(profile.explicit_facts))
         if profile.implicit_traits:
             parts.append("Traits: " + "; ".join(profile.implicit_traits))
+        parts.append("")
+
+    category_profiles = retrieval_result.get("category_profiles", [])
+    if category_profiles:
+        parts.append("=== CATEGORY SUMMARIES ===")
+        for cp in category_profiles:
+            parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
+        parts.append("")
+
+    summary = retrieval_result.get("conversation_summary")
+    if summary:
+        parts.append("=== CONVERSATION SUMMARY ===")
+        parts.append(summary)
         parts.append("")
 
     foresight = retrieval_result.get("foresight", [])
@@ -215,7 +299,7 @@ def compose_context_fast(retrieval_result: dict) -> str:
 
 
 def compose_context(retrieval_result: dict) -> str:
-    """Compose context from facts + episodes + foresight + profile (normal mode)."""
+    """Compose context from profile + categories + summary + episodes + facts + foresight (normal mode)."""
     parts = []
 
     # User profile
@@ -226,6 +310,21 @@ def compose_context(retrieval_result: dict) -> str:
             parts.append("Known facts: " + "; ".join(profile.explicit_facts))
         if profile.implicit_traits:
             parts.append("Traits: " + "; ".join(profile.implicit_traits))
+        parts.append("")
+
+    # Category profiles
+    category_profiles = retrieval_result.get("category_profiles", [])
+    if category_profiles:
+        parts.append("=== CATEGORY SUMMARIES ===")
+        for cp in category_profiles:
+            parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
+        parts.append("")
+
+    # Conversation summary
+    summary = retrieval_result.get("conversation_summary")
+    if summary:
+        parts.append("=== CONVERSATION SUMMARY ===")
+        parts.append(summary)
         parts.append("")
 
     # Episodes
