@@ -32,7 +32,7 @@ def chat(request: ChatRequest):
     query_time = datetime.now(IST)
     recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Retrieve memory context (always fast — profile + category summaries)
+    # 3. Retrieve memory context (always fast — profile + recent consolidated facts)
     memory_context = ""
     try:
         result = retrieve_simple(request.message, query_time=query_time.replace(tzinfo=None))
@@ -74,7 +74,7 @@ async def chat_stream(request: ChatRequest):
     query_time = datetime.now(IST)
     recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Retrieve memory context (always fast — profile + category summaries)
+    # 3. Retrieve memory context (always fast — profile + recent consolidated facts)
     memory_context = ""
     try:
         result = retrieve_simple(request.message, query_time=query_time.replace(tzinfo=None))

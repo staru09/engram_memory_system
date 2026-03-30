@@ -65,3 +65,15 @@ def extract_episode(segment_dialogue: str, current_date: str = None,
         print(f"  [extract] JSON parse failed, retrying...")
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         return _parse_response(response.text)
+
+
+def extract_segment(seg: dict, current_date: str, conversation_summary: str = None) -> dict:
+    """Extract episode, facts, foresight, and metadata for one segment (single LLM call)."""
+    result = extract_episode(seg["dialogue"], current_date, conversation_summary=conversation_summary)
+    return {
+        "segment": seg,
+        "episode_text": result["episode"],
+        "atomic_facts": result["atomic_facts"],
+        "foresight": result.get("foresight", []),
+        "metadata": result.get("metadata", {}),
+    }

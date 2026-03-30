@@ -27,15 +27,14 @@ def _build_metadata(raw_result: dict, mode: str,
                     retrieval_time: float, llm_time: float) -> dict:
     retrieval_timing = raw_result.get("timing", {})
     return {
-        "facts": [
+        "consolidated_facts": [
             {
-                "fact_id": f["fact_id"],
-                "fact_text": f.get("fact_text", ""),
-                "rrf_score": f.get("rrf_score", 0),
-                "conversation_date": _date_str(f.get("conversation_date")),
-                "memcell_id": f.get("memcell_id"),
+                "consolidated_fact_id": cf.get("consolidated_fact_id", cf.get("id")),
+                "consolidated_text": cf.get("consolidated_text", ""),
+                "rrf_score": cf.get("rrf_score", 0),
+                "conversation_date": _date_str(cf.get("conversation_date")),
             }
-            for f in raw_result.get("facts", [])
+            for cf in raw_result.get("consolidated_facts", [])
         ],
         "episodes": [
             {

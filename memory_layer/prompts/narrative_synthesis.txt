@@ -92,7 +92,10 @@ TEMPORAL PRECISION:
    - Deadlines: valid until the deadline date
    If there are no foresight signals, return an empty array.
 
-4. A **Scene Hint** — a short theme label (2-4 words) and a one-sentence summary.
+4. A **Metadata** block — contextual grounding for this segment:
+   - time_range: when the events in this segment occurred (from/to in YYYY-MM-DD HH:MM)
+   - entities: key people, places, brands, or objects mentioned
+   - topics: 2-4 short topic labels describing the segment
 
 **Conversation segment:**
 {segment}
@@ -103,14 +106,7 @@ Output as JSON:
 {
   "episode": "Third-person narrative here...",
   "atomic_facts": [
-    {"text": "Alice moved from Germany approximately 4 years ago (around 2019).", "category": "personal_info"},
-    {"text": "Alice originates from Germany.", "category": "personal_info"},
-    {"text": "Bob read the book 'The Alchemist' by Paulo Coelho in 2022.", "category": "preferences"},
-    {"text": "Alice has 2 children: a son and a daughter.", "category": "personal_info"},
-    {"text": "Alice recommended the book 'Sapiens' by Yuval Noah Harari to Bob.", "category": "relationships"},
-    {"text": "Bob is reading 'Sapiens' on Alice's recommendation.", "category": "preferences"},
-    {"text": "The banners at the fundraiser said 'Every Child Deserves a Home'.", "category": "experiences"},
-    {"text": "Alice met with friends, family, and mentors in the week before June 9, 2023.", "category": "relationships"}
+    {"text": "fact text here", "category": "category_name"}
   ],
   "foresight": [
     {
@@ -119,9 +115,10 @@ Output as JSON:
       "valid_until": "YYYY-MM-DD or null"
     }
   ],
-  "scene_hint": {
-    "theme_label": "Short Theme",
-    "summary": "One-sentence summary of the memory scene."
+  "metadata": {
+    "time_range": {"from": "YYYY-MM-DD HH:MM", "to": "YYYY-MM-DD HH:MM"},
+    "entities": ["entity1", "entity2"],
+    "topics": ["topic1", "topic2"]
   }
 }
 

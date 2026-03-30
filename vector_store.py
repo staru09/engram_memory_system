@@ -21,7 +21,7 @@ def get_client() -> QdrantClient:
 def init_collections():
     """Create Qdrant collections if they don't exist, and ensure payload indexes."""
     client = get_client()
-    for name in ("facts", "scenes"):
+    for name in ("facts", "scenes", "consolidated_facts"):
         if not client.collection_exists(name):
             client.create_collection(
                 collection_name=name,
@@ -31,6 +31,14 @@ def init_collections():
     try:
         client.create_payload_index(
             collection_name="facts",
+            field_name="conversation_date",
+            field_schema=PayloadSchemaType.INTEGER,
+        )
+    except Exception:
+        pass
+    try:
+        client.create_payload_index(
+            collection_name="consolidated_facts",
             field_name="conversation_date",
             field_schema=PayloadSchemaType.INTEGER,
         )
@@ -121,6 +129,52 @@ def get_fact_embeddings(fact_ids: list[int]) -> dict[int, list[float]]:
     client = get_client()
     points = client.retrieve(collection_name="facts", ids=fact_ids, with_vectors=True)
     return {p.id: p.vector for p in points}
+
+
+def upsert_consolidated_fact(cf_id: int, embedding: list[float],
+                             conversation_date: str = None):
+    client = get_client()
+    payload = {"consolidated_fact_id": cf_id}
+    if conversation_date:
+        payload["conversation_date"] = _date_to_int(conversation_date)
+    client.upsert(
+        collection_name="consolidated_facts",
+        points=[
+            PointStruct(id=cf_id, vector=embedding, payload=payload)
+        ],
+    )
+
+
+def search_consolidated_facts(query_embedding: list[float], top_k: int = 10,
+                               date_filter: dict = None) -> list[dict]:
+    client = get_client()
+    query_filter = None
+    if date_filter:
+        query_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="conversation_date",
+                    range=Range(
+                        gte=_date_to_int(date_filter["date_from"]),
+                        lte=_date_to_int(date_filter["date_to"]),
+                    ),
+                )
+            ]
+        )
+    results = client.query_points(
+        collection_name="consolidated_facts",
+        query=query_embedding,
+        limit=top_k,
+        with_payload=True,
+        query_filter=query_filter,
+    )
+    return [
+        {
+            "consolidated_fact_id": hit.payload["consolidated_fact_id"],
+            "score": hit.score,
+        }
+        for hit in results.points
+    ]
 
 
 def search_nearest_scene(query_embedding: list[float], top_k: int = 1) -> list[dict]:

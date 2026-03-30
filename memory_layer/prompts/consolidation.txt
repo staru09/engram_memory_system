@@ -1,0 +1,43 @@
+Given atomic facts extracted from a conversation batch, group related facts and merge each group into a single consolidated statement.
+
+GROUPING RULES:
+- Group facts that share the same event, activity, or topic
+- Facts about the same time period AND same entity belong together
+- Keep unrelated facts in separate groups
+- A fact can only belong to one group
+- Standalone facts that don't relate to any other fact should remain as their own group
+
+DEDUPLICATION RULES:
+- Each piece of information must appear in EXACTLY ONE consolidated fact
+- If a fact is relevant to multiple groups, place it in the MOST SPECIFIC group
+- Never repeat the same detail across different consolidated facts
+- Before finalizing, cross-check all groups: if two groups share overlapping information, merge them or remove the overlap from the less relevant group
+
+MERGING RULES:
+- Combine grouped facts into one dense, self-contained statement
+- Preserve ALL specific details (names, times, numbers, places)
+- Resolve coreferences across facts within the group
+- Use third person, past tense
+
+For each consolidated fact, output:
+- consolidated_text: the merged statement
+- fact_indices: which input facts were merged (0-indexed)
+- metadata: contextual grounding with time_range, entities, and topics
+
+Input facts:
+{facts_with_indices}
+
+Output as JSON array:
+[
+  {{
+    "consolidated_text": "merged statement here",
+    "fact_indices": [0, 1, 3],
+    "metadata": {{
+      "time_range": {{"from": "YYYY-MM-DD HH:MM", "to": "YYYY-MM-DD HH:MM"}},
+      "entities": ["entity1", "entity2"],
+      "topics": ["topic1", "topic2"]
+    }}
+  }}
+]
+
+Return ONLY the JSON array, no extra text.

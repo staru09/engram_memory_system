@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
-from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog, ProfileCategory
+from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog, ProfileCategory, ConsolidatedFact
 
 _pool = None
 
@@ -162,6 +162,21 @@ def init_schema():
             created_at      TIMESTAMP DEFAULT NOW()
         );
         CREATE INDEX IF NOT EXISTS idx_session_summaries_date ON session_summaries (session_date);
+
+        CREATE TABLE IF NOT EXISTS consolidated_facts (
+            id                  SERIAL PRIMARY KEY,
+            consolidated_text   TEXT NOT NULL,
+            fact_ids            INTEGER[] NOT NULL DEFAULT '{}',
+            metadata            JSONB DEFAULT '{}',
+            consolidated_tsv    TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', consolidated_text)) STORED,
+            source_id           VARCHAR(100),
+            conversation_date   DATE,
+            embedding           FLOAT8[],
+            created_at          TIMESTAMP DEFAULT NOW(),
+            updated_at          TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_consolidated_tsv ON consolidated_facts USING GIN (consolidated_tsv);
+        CREATE INDEX IF NOT EXISTS idx_consolidated_date ON consolidated_facts (conversation_date);
     """)
     conn.commit()
     cur.close()
@@ -953,6 +968,101 @@ def get_session_summaries(limit: int = 5) -> list[dict]:
     release_connection(conn)
     return [{"id": r[0], "source_id": r[1], "session_date": r[2], "summary_text": r[3]}
             for r in rows]
+
+
+# ── Consolidated Facts CRUD ──
+
+def insert_consolidated_fact(cf: ConsolidatedFact) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO consolidated_facts
+            (consolidated_text, fact_ids, metadata, source_id, conversation_date, embedding)
+        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+    """, (cf.consolidated_text, cf.fact_ids,
+          json.dumps(cf.metadata) if cf.metadata else '{}',
+          cf.source_id, cf.conversation_date, cf.embedding))
+    row_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return row_id
+
+
+def update_consolidated_fact(cf_id: int, consolidated_text: str, fact_ids: list[int],
+                             metadata: dict, embedding: list[float]):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE consolidated_facts
+        SET consolidated_text = %s, fact_ids = %s, metadata = %s,
+            embedding = %s, updated_at = NOW()
+        WHERE id = %s
+    """, (consolidated_text, fact_ids,
+          json.dumps(metadata) if metadata else '{}',
+          embedding, cf_id))
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+
+
+def get_consolidated_facts_by_ids(cf_ids: list[int]) -> list[dict]:
+    if not cf_ids:
+        return []
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT id, consolidated_text, fact_ids, metadata, source_id, conversation_date
+        FROM consolidated_facts WHERE id = ANY(%s)
+    """, (cf_ids,))
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def keyword_search_consolidated(query_text: str, top_k: int = 10,
+                                date_filter: dict = None) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    tokens = query_text.strip().split()
+    tsquery = " | ".join(tokens)
+    if date_filter:
+        cur.execute("""
+            SELECT id, consolidated_text, fact_ids, metadata, conversation_date,
+                   ts_rank(consolidated_tsv, websearch_to_tsquery('english', %s)) AS rank
+            FROM consolidated_facts
+            WHERE consolidated_tsv @@ websearch_to_tsquery('english', %s)
+              AND conversation_date >= %s AND conversation_date <= %s
+            ORDER BY rank DESC LIMIT %s
+        """, (tsquery, tsquery, date_filter["date_from"], date_filter["date_to"], top_k))
+    else:
+        cur.execute("""
+            SELECT id, consolidated_text, fact_ids, metadata, conversation_date,
+                   ts_rank(consolidated_tsv, websearch_to_tsquery('english', %s)) AS rank
+            FROM consolidated_facts
+            WHERE consolidated_tsv @@ websearch_to_tsquery('english', %s)
+            ORDER BY rank DESC LIMIT %s
+        """, (tsquery, tsquery, top_k))
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def get_recent_consolidated_facts(limit: int = 10) -> list[dict]:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT id, consolidated_text, fact_ids, metadata, source_id, conversation_date
+        FROM consolidated_facts
+        ORDER BY conversation_date DESC, created_at DESC
+        LIMIT %s
+    """, (limit,))
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
 
 
 def get_session_summaries_by_date_range(start_date: str, end_date: str) -> list[dict]:

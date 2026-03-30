@@ -14,7 +14,7 @@ _BATCH_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "conflic
 
 # Facts with similarity above this threshold are checked for contradiction.
 
-CONFLICT_SIMILARITY_THRESHOLD = 0.75
+CONFLICT_SIMILARITY_THRESHOLD = 0.7
 
 
 def _load_prompt():
@@ -240,8 +240,25 @@ def _find_candidates_for_fact(fact_id: int, fact_text: str, fact_embedding: list
     return active
 
 
+CONFLICT_BATCH_SIZE = 25  # max pairs per LLM call to avoid malformed JSON
+
+
 def _check_contradictions_batch_pairs(pairs: list[dict]) -> list[dict]:
-    """Single LLM call to check multiple new-fact-vs-old-fact pairs."""
+    """Check multiple new-fact-vs-old-fact pairs. Splits into chunks if too many."""
+    if not pairs:
+        return []
+
+    all_results = []
+    for chunk_start in range(0, len(pairs), CONFLICT_BATCH_SIZE):
+        chunk = pairs[chunk_start:chunk_start + CONFLICT_BATCH_SIZE]
+        chunk_results = _check_contradictions_chunk(chunk, offset=chunk_start)
+        all_results.extend(chunk_results)
+
+    return all_results
+
+
+def _check_contradictions_chunk(pairs: list[dict], offset: int = 0) -> list[dict]:
+    """Single LLM call for a chunk of pairs. Retries once on JSON failure."""
     prompt_template = _load_prompt_file(_BATCH_PROMPT_PATH)
     pair_lines = []
     for i, p in enumerate(pairs):
@@ -249,14 +266,31 @@ def _check_contradictions_batch_pairs(pairs: list[dict]) -> list[dict]:
     pair_list = "\n".join(pair_lines)
     prompt = prompt_template.replace("{pair_list}", pair_list)
 
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    text = response.text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        if text.endswith("```"):
-            text = text[:-3]
-    parsed = json.loads(text)
-    return parsed.get("results", [])
+    def _parse(resp_text):
+        text = resp_text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]
+            if text.endswith("```"):
+                text = text[:-3]
+        parsed = json.loads(text)
+        results = parsed.get("results", [])
+        # Adjust pair_index to global offset
+        for r in results:
+            if "pair_index" in r:
+                r["pair_index"] += offset
+        return results
+
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        return _parse(response.text)
+    except json.JSONDecodeError:
+        print(f"       [conflict] JSON parse failed, retrying chunk ({len(pairs)} pairs)...")
+        try:
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            return _parse(response.text)
+        except Exception as e:
+            print(f"       [conflict] Retry failed ({e}), skipping chunk")
+            return []
 
 
 def _load_prompt_file(path):
@@ -293,7 +327,7 @@ def _find_all_candidates_batched(facts_with_embeddings: list[dict]) -> tuple[lis
         for hit in vector_cands:
             seen.add(hit["fact_id"])
 
-        # Keyword search (Supabase)
+        # Keyword search
         keyword_hits = db.keyword_search_facts(new_fact["fact_text"], top_k=3)
         keyword_cands = [
             {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
