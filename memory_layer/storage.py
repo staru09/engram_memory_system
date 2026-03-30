@@ -162,6 +162,7 @@ async def store_batch(batch_extractions: list[dict], episode_embeddings: list[li
             "facts": len(p1["atomic_facts"]),
             "conflicts": total_conflicts if i == 0 else 0,
             "parsed_facts": p1.get("parsed_facts", []),
+            "fact_ids": p1.get("fact_ids", []),
         })
 
     return results

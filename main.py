@@ -5,14 +5,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import db
 import vector_store
+from models import ConsolidatedFact
 from memory_layer.memcell_extractor import extract_segments
 from memory_layer.episode_extractor import process_segment
 from memory_layer.storage import store_batch
+from memory_layer.consolidator import consolidate_facts
 from memory_layer.profile_extractor import (
     update_user_profile, update_category_profiles,
     rebuild_conversation_summary, build_session_summary,
 )
-from agentic_layer.vectorize_service import embed_texts
+from agentic_layer.vectorize_service import embed_text, embed_texts
 from agentic_layer.fetch_mem_service import invalidate_category_cache
 
 EXTRACTION_BATCH_SIZE = 10
@@ -87,6 +89,32 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     print(f"\n  Pipeline complete in {time.time() - pipeline_start:.1f}s")
 
+    # Consolidation: group all atomic facts into consolidated facts
+    consolidation_start = time.time()
+    all_parsed_facts = []
+    all_fact_ids = []
+    for r in all_results:
+        all_parsed_facts.extend(r.get("parsed_facts", []))
+        all_fact_ids.extend(r.get("fact_ids", []))
+
+    consolidated_entries = consolidate_facts(all_parsed_facts, all_fact_ids)
+
+    if consolidated_entries:
+        cf_texts = [e["consolidated_text"] for e in consolidated_entries]
+        cf_embeddings = embed_texts(cf_texts)
+        for entry, emb in zip(consolidated_entries, cf_embeddings):
+            cf = ConsolidatedFact(
+                consolidated_text=entry["consolidated_text"],
+                fact_ids=entry["fact_ids"],
+                metadata=entry.get("metadata", {}),
+                source_id=source_id,
+                conversation_date=current_date,
+                embedding=emb,
+            )
+            cf_id = db.insert_consolidated_fact(cf)
+            vector_store.upsert_consolidated_fact(cf_id, emb, current_date)
+        print(f"  [consolidation] Stored {len(consolidated_entries)} consolidated facts in {time.time() - consolidation_start:.1f}s")
+
     # Post-pipeline: summary, session_summary, profile, categories — all independent
     new_facts_by_category = {}
     for r in all_results:
@@ -151,6 +179,7 @@ def reset_databases():
     cur.execute("""
         DROP TABLE IF EXISTS conversation_summaries CASCADE;
         DROP TABLE IF EXISTS session_summaries CASCADE;
+        DROP TABLE IF EXISTS consolidated_facts CASCADE;
         DROP TABLE IF EXISTS profile_categories CASCADE;
         DROP TABLE IF EXISTS conflicts CASCADE;
         DROP TABLE IF EXISTS foresight CASCADE;
@@ -165,7 +194,7 @@ def reset_databases():
     from qdrant_client import QdrantClient
     from config import QDRANT_HOST, QDRANT_PORT
     qclient = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, prefer_grpc=False, timeout=30)
-    for name in ("facts",):
+    for name in ("facts", "consolidated_facts"):
         if qclient.collection_exists(name):
             qclient.delete_collection(name)
 

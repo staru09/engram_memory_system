@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from config import RETRIEVAL_TOP_K
 import db
+import vector_store
 from agentic_layer.retrieval_utils import (
     hybrid_search, filter_active_foresight, deduplicate_facts,
 )
@@ -87,19 +88,14 @@ def retrieve_simple(query: str, query_time: datetime = None) -> dict:
     profile = db.get_user_profile()
     profile_time = time.time() - t0
 
-    t0 = time.time()
-    conversation_summary = db.get_conversation_summary()
-    summary_time = time.time() - t0
-
     context_compose_s = round(time.time() - retrieval_start, 3)
-    print(f"  [simple-retrieval] profile: {profile_time:.3f}s, summary: {summary_time:.3f}s, total: {context_compose_s}s")
+    print(f"  [simple-retrieval] profile: {profile_time:.3f}s, total: {context_compose_s}s")
 
     return {
         "episodes": [],
         "foresight": [],
         "profile": profile,
         "facts": [],
-        "conversation_summary": conversation_summary,
         "timing": {
             "embedding_s": 0,
             "search_s": 0,
@@ -229,6 +225,14 @@ def retrieve_fast(query: str, query_time: datetime = None,
         print(f"  [retrieval] Foresight filter: {before_foresight_filter} → {len(active_foresight)}")
     print(f"  [retrieval] Foresight ({len(active_foresight)} active): {foresight_duration:.2f}s [parallel]")
 
+    # Consolidated facts search (vector, parallel-friendly — uses same query_embedding)
+    t0 = time.time()
+    cf_vector_results = vector_store.search_consolidated_facts(
+        query_embedding, top_k=5, date_filter=date_filter)
+    cf_ids = [hit["consolidated_fact_id"] for hit in cf_vector_results]
+    consolidated_facts = db.get_consolidated_facts_by_ids(cf_ids) if cf_ids else []
+    print(f"  [retrieval] Consolidated facts: {len(consolidated_facts)} ({time.time() - t0:.2f}s)")
+
     # Episode enrichment: fetch episodes from top fact memcell IDs
     t0 = time.time()
     memcell_ids = list(set(f["memcell_id"] for f in top_facts[:top_k_facts] if f.get("memcell_id")))[:5]
@@ -241,28 +245,27 @@ def retrieve_fast(query: str, query_time: datetime = None,
                      and not is_mixed
                      and effective_query_time.date() != datetime.now(IST).date())
     profile = None if is_historical else db.get_user_profile()
-    conversation_summary = db.get_conversation_summary()
 
     step_timing["context_compose_s"] = round(time.time() - t0, 3)
 
     total_s = time.time() - retrieval_start
     print(f"  [retrieval] Total: {total_s:.2f}s "
-          f"({len(top_facts)} facts, {len(episodes)} episodes, {len(active_foresight)} foresight)"
+          f"({len(consolidated_facts)} consolidated, {len(episodes)} episodes, {len(active_foresight)} foresight)"
           f"{' [temporal]' if date_filter else ''}")
 
     return {
         "episodes": episodes,
         "foresight": active_foresight,
         "profile": profile,
-        "conversation_summary": conversation_summary,
         "category_profiles": category_profiles,
-        "facts": top_facts[:top_k_facts],
+        "consolidated_facts": consolidated_facts,
+        "facts": [],
         "timing": step_timing,
     }
 
 
 def compose_context_fast(retrieval_result: dict) -> str:
-    """Compose context from profile + conversation summary + category profiles (fast mode)."""
+    """Compose context from profile only (fast mode). Short-term memory added at route level."""
     parts = []
 
     profile = retrieval_result.get("profile")
@@ -272,19 +275,6 @@ def compose_context_fast(retrieval_result: dict) -> str:
             parts.append("Known facts: " + "; ".join(profile.explicit_facts))
         if profile.implicit_traits:
             parts.append("Traits: " + "; ".join(profile.implicit_traits))
-        parts.append("")
-
-    category_profiles = retrieval_result.get("category_profiles", [])
-    if category_profiles:
-        parts.append("=== CATEGORY SUMMARIES ===")
-        for cp in category_profiles:
-            parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
-        parts.append("")
-
-    summary = retrieval_result.get("conversation_summary")
-    if summary:
-        parts.append("=== CONVERSATION SUMMARY ===")
-        parts.append(summary)
         parts.append("")
 
     foresight = retrieval_result.get("foresight", [])
@@ -299,7 +289,7 @@ def compose_context_fast(retrieval_result: dict) -> str:
 
 
 def compose_context(retrieval_result: dict) -> str:
-    """Compose context from profile + categories + summary + episodes + facts + foresight (normal mode)."""
+    """Compose context from profile + categories + consolidated facts + episodes + foresight (normal mode)."""
     parts = []
 
     # User profile
@@ -320,11 +310,14 @@ def compose_context(retrieval_result: dict) -> str:
             parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
         parts.append("")
 
-    # Conversation summary
-    summary = retrieval_result.get("conversation_summary")
-    if summary:
-        parts.append("=== CONVERSATION SUMMARY ===")
-        parts.append(summary)
+    # Consolidated facts
+    consolidated = retrieval_result.get("consolidated_facts", [])
+    if consolidated:
+        parts.append("=== CONSOLIDATED MEMORIES ===")
+        for i, cf in enumerate(consolidated, 1):
+            date_val = cf.get("conversation_date")
+            date_str = str(date_val) if date_val else "unknown"
+            parts.append(f"[{i}] ({date_str}) {cf['consolidated_text']}")
         parts.append("")
 
     # Episodes
@@ -342,24 +335,6 @@ def compose_context(retrieval_result: dict) -> str:
             else:
                 date_str = "unknown"
             parts.append(f"[{i}] ({date_str}) {ep['episode_text']}")
-        parts.append("")
-
-    # Facts
-    facts = retrieval_result.get("facts", [])
-    if facts:
-        parts.append("=== FACTS ===")
-        fact_ids = [f["fact_id"] for f in facts]
-        superseded_map = db.get_superseded_map(fact_ids)
-        fact_ids_in_context = set(fact_ids)
-
-        facts = [
-            f for f in facts
-            if not (f["fact_id"] in superseded_map and superseded_map[f["fact_id"]] in fact_ids_in_context)
-        ]
-
-        for f in facts[:FAST_FACTS_LIMIT]:
-            date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
-            parts.append(f"- {f['fact_text']}{date_tag}")
         parts.append("")
 
     # Foresight
