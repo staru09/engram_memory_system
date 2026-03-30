@@ -44,19 +44,9 @@ class MemCell:
     raw_dialogue: str = ""
     created_at: Optional[datetime] = None
     source_id: str = ""
-    scene_id: Optional[int] = None
     conversation_date: Optional[str] = None
     facts: list[AtomicFact] = field(default_factory=list)
     foresight: list[Foresight] = field(default_factory=list)
-
-
-@dataclass
-class MemScene:
-    id: Optional[int] = None
-    theme_label: str = ""
-    summary: str = ""
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
 
 
 @dataclass

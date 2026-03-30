@@ -27,7 +27,7 @@ def extract_episode(segment_dialogue: str, current_date: str = None,
                               used for cross-reference resolution.
 
     Returns:
-        {"episode": str, "atomic_facts": list[dict], "foresight": list[dict], "scene_hint": dict}
+        {"episode": str, "atomic_facts": list[dict], "foresight": list[dict]}
     """
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))

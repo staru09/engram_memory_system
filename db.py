@@ -4,7 +4,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import ThreadedConnectionPool
 from config import PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
-from models import MemCell, AtomicFact, Foresight, MemScene, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog, ProfileCategory
+from models import MemCell, AtomicFact, Foresight, Conflict, UserProfile, ChatThread, ChatMessage, QueryLog, ProfileCategory
 
 _pool = None
 
@@ -48,21 +48,12 @@ def init_schema():
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS memscenes (
-            id              SERIAL PRIMARY KEY,
-            theme_label     VARCHAR(200),
-            summary         TEXT,
-            created_at      TIMESTAMP DEFAULT NOW(),
-            updated_at      TIMESTAMP DEFAULT NOW()
-        );
-
         CREATE TABLE IF NOT EXISTS memcells (
             id              SERIAL PRIMARY KEY,
             episode_text    TEXT NOT NULL,
             raw_dialogue    TEXT,
             created_at      TIMESTAMP DEFAULT NOW(),
             source_id       VARCHAR(100),
-            scene_id        INTEGER REFERENCES memscenes(id),
             conversation_date DATE,
             embedding       FLOAT8[]
         );
@@ -184,82 +175,20 @@ def init_schema():
     seed_default_categories()
 
 
-# ── MemScene CRUD ──
-
-def insert_memscene(scene: MemScene) -> int:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO memscenes (theme_label, summary) VALUES (%s, %s) RETURNING id",
-        (scene.theme_label, scene.summary)
-    )
-    scene_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-    return scene_id
-
-
-def update_memscene_summary(scene_id: int, summary: str, theme_label: str = None):
-    conn = get_connection()
-    cur = conn.cursor()
-    if theme_label:
-        cur.execute(
-            "UPDATE memscenes SET summary = %s, theme_label = %s, updated_at = NOW() WHERE id = %s",
-            (summary, theme_label, scene_id)
-        )
-    else:
-        cur.execute(
-            "UPDATE memscenes SET summary = %s, updated_at = NOW() WHERE id = %s",
-            (summary, scene_id)
-        )
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-
-
 # ── MemCell CRUD ──
 
 def insert_memcell(cell: MemCell) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO memcells (episode_text, raw_dialogue, source_id, scene_id, conversation_date) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-        (cell.episode_text, cell.raw_dialogue, cell.source_id, cell.scene_id, cell.conversation_date)
+        "INSERT INTO memcells (episode_text, raw_dialogue, source_id, conversation_date) VALUES (%s, %s, %s, %s) RETURNING id",
+        (cell.episode_text, cell.raw_dialogue, cell.source_id, cell.conversation_date)
     )
     cell_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
     release_connection(conn)
     return cell_id
-
-
-def update_memcell_scene(memcell_id: int, scene_id: int):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE memcells SET scene_id = %s WHERE id = %s",
-        (scene_id, memcell_id)
-    )
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-
-
-def get_memcells_by_scene(scene_id: int, query_time=None) -> list[dict]:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    if query_time:
-        cur.execute(
-            "SELECT * FROM memcells WHERE scene_id = %s AND conversation_date <= %s ORDER BY created_at",
-            (scene_id, query_time)
-        )
-    else:
-        cur.execute("SELECT * FROM memcells WHERE scene_id = %s ORDER BY created_at", (scene_id,))
-    rows = cur.fetchall()
-    cur.close()
-    release_connection(conn)
-    return rows
 
 
 # ── AtomicFact CRUD ──
@@ -681,25 +610,6 @@ def get_memcells_by_ids(memcell_ids: list[int]) -> dict[int, dict]:
     return {row["id"]: row for row in rows}
 
 
-def get_memcells_by_scenes(scene_ids: list[int], query_time=None) -> list[dict]:
-    """Batch fetch memcells for multiple scenes in a single query."""
-    if not scene_ids:
-        return []
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    if query_time:
-        cur.execute(
-            "SELECT * FROM memcells WHERE scene_id = ANY(%s) AND conversation_date <= %s ORDER BY created_at",
-            (list(scene_ids), query_time)
-        )
-    else:
-        cur.execute("SELECT * FROM memcells WHERE scene_id = ANY(%s) ORDER BY created_at", (list(scene_ids),))
-    rows = cur.fetchall()
-    cur.close()
-    release_connection(conn)
-    return rows
-
-
 def get_fact_by_id(fact_id: int) -> dict | None:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -884,8 +794,6 @@ def get_system_stats() -> dict:
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM memcells")
     total_memcells = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM memscenes")
-    total_scenes = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM conflicts")
     total_conflicts = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM atomic_facts WHERE is_active = TRUE")
@@ -896,7 +804,6 @@ def get_system_stats() -> dict:
     release_connection(conn)
     return {
         "total_memcells": total_memcells,
-        "total_scenes": total_scenes,
         "total_conflicts": total_conflicts,
         "active_facts": active_facts,
         "total_facts": total_facts,

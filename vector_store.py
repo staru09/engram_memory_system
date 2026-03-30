@@ -21,7 +21,7 @@ def get_client() -> QdrantClient:
 def init_collections():
     """Create Qdrant collections if they don't exist, and ensure payload indexes."""
     client = get_client()
-    for name in ("facts", "scenes"):
+    for name in ("facts",):
         if not client.collection_exists(name):
             client.create_collection(
                 collection_name=name,
@@ -57,20 +57,6 @@ def upsert_fact(fact_id: int, memcell_id: int, embedding: list[float],
                 id=fact_id,
                 vector=embedding,
                 payload=payload,
-            )
-        ],
-    )
-
-
-def upsert_scene(scene_id: int, embedding: list[float]):
-    client = get_client()
-    client.upsert(
-        collection_name="scenes",
-        points=[
-            PointStruct(
-                id=scene_id,
-                vector=embedding,
-                payload={"memscene_id": scene_id},
             )
         ],
     )
@@ -135,19 +121,3 @@ def get_fact_embeddings(fact_ids: list[int]) -> dict[int, list[float]]:
     return {p.id: p.vector for p in points}
 
 
-def search_nearest_scene(query_embedding: list[float], top_k: int = 1) -> list[dict]:
-    """Find nearest MemScene centroid. Returns list of {memscene_id, score}."""
-    client = get_client()
-    results = client.query_points(
-        collection_name="scenes",
-        query=query_embedding,
-        limit=top_k,
-        with_payload=True,
-    )
-    return [
-        {
-            "memscene_id": hit.payload["memscene_id"],
-            "score": hit.score,
-        }
-        for hit in results.points
-    ]
