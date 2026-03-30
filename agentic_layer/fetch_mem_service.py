@@ -552,10 +552,16 @@ def retrieve_fast(query: str, query_time: datetime = None,
 
     # Episode enrichment: fetch episodes from top fact memcell IDs (replaces scene-based pooling)
     t0 = time.time()
-    memcell_ids = list(set(f["memcell_id"] for f in top_facts[:top_k_facts] if f.get("memcell_id")))[:5]
-    memcells_map = db.get_memcells_by_ids(memcell_ids) if memcell_ids else {}
-    episodes = list(memcells_map.values())
-    print(f"  [retrieval] Episodes from {len(memcell_ids)} memcells: {len(episodes)} ({time.time() - t0:.2f}s)")
+    # Rank memcells by best RRF score of their linked facts
+    memcell_scores = {}
+    for f in top_facts[:top_k_facts]:
+        mid = f.get("memcell_id")
+        if mid and (mid not in memcell_scores or f["rrf_score"] > memcell_scores[mid]):
+            memcell_scores[mid] = f["rrf_score"]
+    ranked_memcell_ids = sorted(memcell_scores.keys(), key=lambda m: -memcell_scores[m])[:5]
+    memcells_map = db.get_memcells_by_ids(ranked_memcell_ids) if ranked_memcell_ids else {}
+    episodes = [memcells_map[mid] for mid in ranked_memcell_ids if mid in memcells_map]
+    print(f"  [retrieval] Episodes from {len(ranked_memcell_ids)} memcells: {len(episodes)} ({time.time() - t0:.2f}s)")
 
     # Profile + conversation summary
     is_historical = (date_filter is not None
