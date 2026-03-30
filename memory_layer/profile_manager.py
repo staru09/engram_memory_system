@@ -240,8 +240,25 @@ def _find_candidates_for_fact(fact_id: int, fact_text: str, fact_embedding: list
     return active
 
 
+CONFLICT_BATCH_SIZE = 25
+
+
 def _check_contradictions_batch_pairs(pairs: list[dict]) -> list[dict]:
-    """Single LLM call to check multiple new-fact-vs-old-fact pairs."""
+    """Check multiple new-fact-vs-old-fact pairs. Splits into chunks if too many."""
+    if not pairs:
+        return []
+
+    all_results = []
+    for chunk_start in range(0, len(pairs), CONFLICT_BATCH_SIZE):
+        chunk = pairs[chunk_start:chunk_start + CONFLICT_BATCH_SIZE]
+        chunk_results = _check_contradictions_chunk(chunk, offset=chunk_start)
+        all_results.extend(chunk_results)
+
+    return all_results
+
+
+def _check_contradictions_chunk(pairs: list[dict], offset: int = 0) -> list[dict]:
+    """Single LLM call for a chunk of pairs. Retries once on JSON failure."""
     prompt_template = _load_prompt_file(_BATCH_PROMPT_PATH)
     pair_lines = []
     for i, p in enumerate(pairs):
@@ -249,14 +266,30 @@ def _check_contradictions_batch_pairs(pairs: list[dict]) -> list[dict]:
     pair_list = "\n".join(pair_lines)
     prompt = prompt_template.replace("{pair_list}", pair_list)
 
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    text = response.text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        if text.endswith("```"):
-            text = text[:-3]
-    parsed = json.loads(text)
-    return parsed.get("results", [])
+    def _parse(resp_text):
+        text = resp_text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1]
+            if text.endswith("```"):
+                text = text[:-3]
+        parsed = json.loads(text)
+        results = parsed.get("results", [])
+        for r in results:
+            if "pair_index" in r:
+                r["pair_index"] += offset
+        return results
+
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        return _parse(response.text)
+    except json.JSONDecodeError:
+        print(f"       [conflict] JSON parse failed, retrying chunk ({len(pairs)} pairs)...")
+        try:
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            return _parse(response.text)
+        except Exception as e:
+            print(f"       [conflict] Retry failed ({e}), skipping chunk")
+            return []
 
 
 def _load_prompt_file(path):
@@ -264,9 +297,11 @@ def _load_prompt_file(path):
         return f.read()
 
 
-def _find_all_candidates_batched(facts_with_embeddings: list[dict]) -> tuple[list[dict], list[dict]]:
+def _find_all_candidates_batched(facts_with_embeddings: list[dict],
+                                 exclude_ids: set = None) -> tuple[list[dict], list[dict]]:
     """
-    Find conflict candidates for ALL facts in a segment with minimal DB round-trips.
+    Find conflict candidates for ALL facts with minimal DB round-trips.
+    Excludes facts in exclude_ids (current batch) from candidate search at the query level.
 
     Returns (all_pairs, pair_metadata) ready for the LLM call.
     """
@@ -276,25 +311,26 @@ def _find_all_candidates_batched(facts_with_embeddings: list[dict]) -> tuple[lis
     all_pairs = []
     pair_metadata = []
 
+    if exclude_ids is None:
+        exclude_ids = set()
+
     # Run vector + keyword searches in parallel across all facts
     search_start = time.time()
 
     def _search_one_fact(new_fact):
         """Run vector + keyword search for one fact, return raw candidates."""
-        fact_id = new_fact["fact_id"]
-        seen = {fact_id}
-
-        # Vector search (Qdrant Cloud)
-        similar = vector_store.search_facts(new_fact["embedding"], top_k=3)
+        # Vector search — exclude batch facts at Qdrant level
+        similar = vector_store.search_facts(new_fact["embedding"], top_k=3,
+                                            exclude_ids=exclude_ids)
         vector_cands = [
             hit for hit in similar
-            if hit["fact_id"] not in seen and hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
+            if hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
         ]
-        for hit in vector_cands:
-            seen.add(hit["fact_id"])
+        seen = {hit["fact_id"] for hit in vector_cands}
 
-        # Keyword search (Supabase)
-        keyword_hits = db.keyword_search_facts(new_fact["fact_text"], top_k=3)
+        # Keyword search — exclude batch facts at SQL level
+        keyword_hits = db.keyword_search_facts(new_fact["fact_text"], top_k=3,
+                                               exclude_ids=exclude_ids)
         keyword_cands = [
             {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
             for row in keyword_hits
@@ -346,14 +382,16 @@ def _find_all_candidates_batched(facts_with_embeddings: list[dict]) -> tuple[lis
 
 def detect_conflicts_batch(facts_with_embeddings: list[dict],
                            interactive: bool = False,
-                           current_date: str = None) -> int:
+                           current_date: str = None,
+                           exclude_ids: set = None) -> int:
     """
-    Batch conflict detection: one LLM call per segment instead of one per fact.
+    Batch conflict detection for all facts in one call.
 
     Args:
         facts_with_embeddings: list of {fact_id, fact_text, embedding}
         interactive: user-resolution mode
         current_date: for superseded_on dating
+        exclude_ids: fact IDs to exclude from candidate search (current batch)
 
     Returns:
         Total number of conflicts detected.
@@ -361,7 +399,8 @@ def detect_conflicts_batch(facts_with_embeddings: list[dict],
     import time
 
     # Step 1: Parallel candidate search + single batch DB fetch
-    all_pairs, pair_metadata = _find_all_candidates_batched(facts_with_embeddings)
+    all_pairs, pair_metadata = _find_all_candidates_batched(facts_with_embeddings,
+                                                            exclude_ids=exclude_ids)
 
     if not all_pairs:
         return 0

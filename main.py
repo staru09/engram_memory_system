@@ -12,8 +12,7 @@ import vector_store
 from models import MemCell, AtomicFact, Foresight
 from memory_layer.memcell_extractor import extract_segments
 from memory_layer.episode_extractor import extract_episode
-from memory_layer.cluster_manager import assign_to_scene
-from memory_layer.profile_manager import detect_conflicts, detect_conflicts_batch
+from memory_layer.profile_manager import detect_conflicts_batch
 from memory_layer.profile_extractor import update_user_profile
 from agentic_layer.vectorize_service import embed_text, embed_texts
 from agentic_layer.memory_manager import agentic_retrieve
@@ -141,7 +140,6 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
         episode_text = ext["episode_text"]
         atomic_facts = ext["atomic_facts"]
         foresight_signals = ext["foresight"]
-        scene_hint = ext.get("scene_hint")
 
         seg_label = f"Segment {seg['segment_id']}: {seg['topic_hint']}"
         print(f"       [phase1] Starting {seg_label}")
@@ -225,19 +223,10 @@ async def _store_segment_data(ext: dict, source_id: str, episode_embedding: list
                 await loop.run_in_executor(_executor, db.update_foresight_embedding,
                                            foresight_id, foresight_embeddings[i])
 
-        scene_id = None
-        try:
-            scene_id = await loop.run_in_executor(
-                _executor, assign_to_scene, memcell_id, episode_text, episode_embedding, scene_hint
-            )
-        except Exception as e:
-            print(f"   [phase1] Scene assignment failed (non-critical): {e}")
-
-        print(f"   [phase1] Done {seg_label} → scene {scene_id}, {len(atomic_facts)} facts")
+        print(f"   [phase1] Done {seg_label} → {len(atomic_facts)} facts")
 
         return {
             "memcell_id": memcell_id,
-            "scene_id": scene_id,
             "seg_label": seg_label,
             "fact_ids": fact_ids,
             "atomic_facts": atomic_facts,
@@ -262,24 +251,21 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
     phase1_results = await asyncio.gather(*phase1_tasks)
     print(f"\n       [Phase 1] Complete: {time.time() - phase1_start:.1f}s")
 
-    # Phase 2 — Sequential per segment, batched within segment (1 LLM call per segment)
-    phase2_start = time.time()
-    print(f"       [Phase 2] Running conflict detection (segment-level batching)...")
-    total_conflicts = 0
-    conflict_counts = []
+    # Phase 2 — Single conflict detection call for all facts across all segments
+    all_batch_fact_ids = set()
+    all_facts_with_embeddings = []
     for p1 in phase1_results:
+        all_batch_fact_ids.update(p1.get("fact_ids", []))
         fact_texts = [pf["text"] for pf in p1["parsed_facts"]]
-        facts_with_embeddings = [
-            {"fact_id": fid, "fact_text": ft, "embedding": emb}
-            for fid, ft, emb in zip(p1["fact_ids"], fact_texts, p1["embeddings"])
-        ]
-        seg_conflicts = await loop.run_in_executor(
-            _executor, detect_conflicts_batch, facts_with_embeddings, interactive, current_date
-        )
-        if seg_conflicts:
-            print(f"       [phase2] {p1['seg_label']}: {seg_conflicts} conflicts detected")
-        conflict_counts.append(seg_conflicts)
-        total_conflicts += seg_conflicts
+        for fid, ft, emb in zip(p1["fact_ids"], fact_texts, p1["embeddings"]):
+            all_facts_with_embeddings.append({"fact_id": fid, "fact_text": ft, "embedding": emb})
+
+    phase2_start = time.time()
+    print(f"       [Phase 2] Running conflict detection ({len(all_facts_with_embeddings)} facts, batch-combined)...")
+    total_conflicts = await loop.run_in_executor(
+        _executor, detect_conflicts_batch, all_facts_with_embeddings, interactive,
+        current_date, all_batch_fact_ids
+    )
     print(f"       [Phase 2] Complete: {total_conflicts} conflicts in {time.time() - phase2_start:.1f}s")
 
     total_storage = time.time() - phase1_start
@@ -287,12 +273,11 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
 
     # Build final results
     results = []
-    for p1, seg_conflicts in zip(phase1_results, conflict_counts):
+    for i, p1 in enumerate(phase1_results):
         results.append({
             "memcell_id": p1["memcell_id"],
-            "scene_id": p1["scene_id"],
             "facts": len(p1["atomic_facts"]),
-            "conflicts": seg_conflicts,
+            "conflicts": total_conflicts if i == 0 else 0,
             "parsed_facts": p1.get("parsed_facts", []),
         })
 

@@ -303,50 +303,58 @@ def _to_or_query(query: str) -> str:
 
 
 def keyword_search_facts(query: str, top_k: int = 10, query_time=None,
-                         date_filter: dict = None) -> list[dict]:
+                         date_filter: dict = None, exclude_ids: set = None) -> list[dict]:
     """Full-text search on atomic_facts using websearch_to_tsquery with OR logic.
-    Any matching token returns results (not all tokens required).
-    ts_rank naturally scores documents with more matching tokens higher.
 
     Args:
         date_filter: Optional {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}
+        exclude_ids: Optional set of fact IDs to exclude from results
     """
     or_query = _to_or_query(query)
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    exclude_clause = ""
+    exclude_params = []
+    if exclude_ids:
+        exclude_clause = " AND id != ALL(%s)"
+        exclude_params = [list(exclude_ids)]
+
     if date_filter:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE conversation_date BETWEEN %s AND %s
               AND is_active = TRUE
               AND fact_tsv @@ websearch_to_tsquery('english', %s)
+              {exclude_clause}
             ORDER BY rank DESC
             LIMIT %s
-        """, (or_query, date_filter["date_from"], date_filter["date_to"], or_query, top_k))
+        """, (or_query, date_filter["date_from"], date_filter["date_to"], or_query, *exclude_params, top_k))
     elif query_time:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE conversation_date <= %s
               AND (superseded_on IS NULL OR superseded_on > %s)
               AND fact_tsv @@ websearch_to_tsquery('english', %s)
+              {exclude_clause}
             ORDER BY rank DESC
             LIMIT %s
-        """, (or_query, query_time, query_time, or_query, top_k))
+        """, (or_query, query_time, query_time, or_query, *exclude_params, top_k))
     else:
-        cur.execute("""
+        cur.execute(f"""
             SELECT id, memcell_id, fact_text, conversation_date,
                    ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
             FROM atomic_facts
             WHERE is_active = TRUE
               AND fact_tsv @@ websearch_to_tsquery('english', %s)
+              {exclude_clause}
             ORDER BY rank DESC
             LIMIT %s
-        """, (or_query, or_query, top_k))
+        """, (or_query, or_query, *exclude_params, top_k))
     rows = cur.fetchall()
     cur.close()
     release_connection(conn)

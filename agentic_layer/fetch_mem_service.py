@@ -555,7 +555,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
 
     # Episode enrichment: fetch episodes from top fact memcell IDs (replaces scene-based pooling)
     t0 = time.time()
-    memcell_ids = list(set(f["memcell_id"] for f in top_facts[:top_k_facts] if f.get("memcell_id")))
+    memcell_ids = list(set(f["memcell_id"] for f in top_facts[:top_k_facts] if f.get("memcell_id")))[:5]
     memcells_map = db.get_memcells_by_ids(memcell_ids) if memcell_ids else {}
     episodes = list(memcells_map.values())
     print(f"  [retrieval] Episodes from {len(memcell_ids)} memcells: {len(episodes)} ({time.time() - t0:.2f}s)")

@@ -1,7 +1,7 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue, Range,
-    PayloadSchemaType
+    PayloadSchemaType, HasIdCondition
 )
 from config import QDRANT_HOST, QDRANT_PORT, QDRANT_URL, QDRANT_API_KEY, EMBEDDING_DIM
 
@@ -77,26 +77,38 @@ def upsert_scene(scene_id: int, embedding: list[float]):
 
 
 def search_facts(query_embedding: list[float], top_k: int = 10,
-                  date_filter: dict = None) -> list[dict]:
+                  date_filter: dict = None, exclude_ids: set = None) -> list[dict]:
     """Semantic search over atomic fact embeddings. Returns list of {fact_id, memcell_id, score}.
 
     Args:
         date_filter: Optional {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}
+        exclude_ids: Optional set of fact IDs to exclude from results
     """
     client = get_client()
-    query_filter = None
+    must_conditions = []
+    must_not_conditions = []
+
     if date_filter:
-        query_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="conversation_date",
-                    range=Range(
-                        gte=_date_to_int(date_filter["date_from"]),
-                        lte=_date_to_int(date_filter["date_to"]),
-                    ),
-                )
-            ]
+        must_conditions.append(
+            FieldCondition(
+                key="conversation_date",
+                range=Range(
+                    gte=_date_to_int(date_filter["date_from"]),
+                    lte=_date_to_int(date_filter["date_to"]),
+                ),
+            )
         )
+
+    if exclude_ids:
+        must_not_conditions.append(HasIdCondition(has_id=list(exclude_ids)))
+
+    query_filter = None
+    if must_conditions or must_not_conditions:
+        query_filter = Filter(
+            must=must_conditions if must_conditions else None,
+            must_not=must_not_conditions if must_not_conditions else None,
+        )
+
     results = client.query_points(
         collection_name="facts",
         query=query_embedding,
