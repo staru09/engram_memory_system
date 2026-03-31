@@ -312,12 +312,13 @@ def retrieve_fast(query: str, query_time: datetime = None,
 
 
 def compose_context_fast(retrieval_result: dict) -> str:
-    """Compose context from profile + category summaries (fast mode)."""
+    """Compose context from profile + category summaries (fast mode). Hierarchical format."""
     parts = []
+
+    parts.append("=== HIGH-LEVEL CONTEXT ===")
 
     profile = retrieval_result.get("profile")
     if profile:
-        parts.append("=== USER PROFILE ===")
         if profile.explicit_facts:
             parts.append("Known facts: " + "; ".join(profile.explicit_facts))
         if profile.implicit_traits:
@@ -326,40 +327,42 @@ def compose_context_fast(retrieval_result: dict) -> str:
 
     category_profiles = retrieval_result.get("category_profiles", [])
     if category_profiles:
-        parts.append("=== CATEGORY SUMMARIES ===")
         for cp in category_profiles:
-            parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
+            parts.append(f"[{cp['category_name']}]")
+            parts.append(cp['summary_text'])
         parts.append("")
 
     return "\n".join(parts)
 
 
 def compose_context(retrieval_result: dict) -> str:
-    """Compose context: profile + categories + episodes + facts + foresight."""
+    """Compose context hierarchically: high-level first, then detailed evidence."""
     parts = []
 
-    # User profile
+    # === HIGH-LEVEL CONTEXT ===
+    parts.append("=== HIGH-LEVEL CONTEXT ===")
+
     profile = retrieval_result.get("profile")
     if profile:
-        parts.append("=== USER PROFILE ===")
         if profile.explicit_facts:
             parts.append("Known facts: " + "; ".join(profile.explicit_facts))
         if profile.implicit_traits:
             parts.append("Traits: " + "; ".join(profile.implicit_traits))
         parts.append("")
 
-    # Category summaries
     category_profiles = retrieval_result.get("category_profiles", [])
     if category_profiles:
-        parts.append("=== CATEGORY SUMMARIES ===")
         for cp in category_profiles:
-            parts.append(f"[{cp['category_name']}] {cp['summary_text']}")
+            parts.append(f"[{cp['category_name']}]")
+            parts.append(cp['summary_text'])
         parts.append("")
+
+    # === DETAILED EVIDENCE ===
+    parts.append("=== DETAILED EVIDENCE ===")
 
     # Episodes
     episodes = retrieval_result.get("episodes", [])
     if episodes:
-        parts.append("=== EPISODES ===")
         for i, ep in enumerate(episodes, 1):
             date_val = ep.get("conversation_date")
             if hasattr(date_val, 'strftime'):
@@ -376,7 +379,6 @@ def compose_context(retrieval_result: dict) -> str:
     # Facts
     facts = retrieval_result.get("facts", [])
     if facts:
-        parts.append("=== FACTS ===")
         fact_ids = [f["fact_id"] for f in facts]
         superseded_map = db.get_superseded_map(fact_ids)
         fact_ids_in_context = set(fact_ids)
@@ -388,13 +390,12 @@ def compose_context(retrieval_result: dict) -> str:
 
         for f in facts[:FAST_FACTS_LIMIT]:
             date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
-            parts.append(f"- {f['fact_text']}{date_tag}")
+            parts.append(f"- {f['fact_text']}{date_tag} (score: {f['rrf_score']:.4f})")
         parts.append("")
 
     # Foresight
     foresight = retrieval_result.get("foresight", [])
     if foresight:
-        parts.append("=== ACTIVE FORESIGHT ===")
         for fs in foresight:
             source = fs["source_date"].strftime("%Y-%m-%d") if hasattr(fs.get("source_date"), 'strftime') else (str(fs["source_date"]) if fs.get("source_date") else "unknown")
             until = fs["valid_until"].strftime("%Y-%m-%d") if fs.get("valid_until") else "indefinite"
