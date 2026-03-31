@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from config import RETRIEVAL_TOP_K, COHERE_API_KEY
 import db
+import vector_store
 from agentic_layer.retrieval_utils import (
     hybrid_search, filter_active_foresight, deduplicate_facts,
 )
@@ -200,9 +201,9 @@ def retrieve_fast(query: str, query_time: datetime = None,
     if relevant_cats:
         print(f"  [retrieval] Categories: {relevant_cats}")
 
-    # Step 2: Launch foresight + category + profile fetch in parallel with search
+    # Step 2: Launch foresight + category + profile + consolidated search in parallel
     is_historical = (date_filter is not None and not is_mixed)
-    parallel_executor = ThreadPoolExecutor(max_workers=3)
+    parallel_executor = ThreadPoolExecutor(max_workers=4)
 
     def _run_foresight():
         t = time.time()
@@ -217,9 +218,19 @@ def retrieve_fast(query: str, query_time: datetime = None,
             return None
         return db.get_user_profile()
 
+    def _run_consolidated_search():
+        t = time.time()
+        cf_results = vector_store.search_consolidated_facts(
+            query_embedding, top_k=5, date_filter=date_filter)
+        cf_ids = [hit["consolidated_fact_id"] for hit in cf_results]
+        cf_rows = db.get_consolidated_facts_by_ids(cf_ids) if cf_ids else []
+        print(f"  [retrieval] Consolidated facts: {len(cf_rows)} ({time.time() - t:.2f}s) [parallel]")
+        return cf_rows
+
     foresight_future = parallel_executor.submit(_run_foresight)
     category_future = parallel_executor.submit(_run_category_fetch)
     profile_future = parallel_executor.submit(_run_profile)
+    consolidated_future = parallel_executor.submit(_run_consolidated_search)
 
     # Step 3: Hybrid search (keyword + vector → RRF)
     search_k = top_k_facts
@@ -246,12 +257,14 @@ def retrieve_fast(query: str, query_time: datetime = None,
         active_foresight, foresight_duration = foresight_future.result()
         category_profiles = category_future.result()
         profile = profile_future.result()
+        consolidated_facts = consolidated_future.result()
         parallel_executor.shutdown(wait=False)
         step_timing["foresight_s"] = round(foresight_duration, 3)
         step_timing["context_compose_s"] = 0
         print(f"  [retrieval] No facts found. Total: {time.time() - retrieval_start:.2f}s")
         return {"episodes": [], "foresight": active_foresight, "profile": profile, "facts": [],
-                "category_profiles": category_profiles, "timing": step_timing}
+                "category_profiles": category_profiles, "consolidated_facts": consolidated_facts,
+                "timing": step_timing}
 
     # Fact deduplication
     before_dedup = len(top_facts)
@@ -270,6 +283,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
     active_foresight, foresight_duration = foresight_future.result()
     category_profiles = category_future.result()
     profile = profile_future.result()
+    consolidated_facts = consolidated_future.result()
     parallel_executor.shutdown(wait=False)
     step_timing["foresight_s"] = round(foresight_duration, 3)
 
@@ -307,6 +321,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
         "profile": profile,
         "facts": top_facts[:top_k_facts],
         "category_profiles": category_profiles,
+        "consolidated_facts": consolidated_facts,
         "timing": step_timing,
     }
 
@@ -359,6 +374,15 @@ def compose_context(retrieval_result: dict) -> str:
 
     # === DETAILED EVIDENCE ===
     parts.append("=== DETAILED EVIDENCE ===")
+
+    # Consolidated facts
+    consolidated = retrieval_result.get("consolidated_facts", [])
+    if consolidated:
+        for i, cf in enumerate(consolidated, 1):
+            date_val = cf.get("conversation_date")
+            date_str = str(date_val) if date_val else "unknown"
+            parts.append(f"[C{i}] ({date_str}) {cf['consolidated_text']}")
+        parts.append("")
 
     # Episodes
     episodes = retrieval_result.get("episodes", [])

@@ -9,7 +9,7 @@ from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL
 import db
 import vector_store
-from models import MemCell, AtomicFact, Foresight
+from models import MemCell, AtomicFact, Foresight, ConsolidatedFact
 from memory_layer.memcell_extractor import extract_segments
 from memory_layer.episode_extractor import extract_episode
 from memory_layer.profile_manager import detect_conflicts_batch
@@ -288,6 +288,7 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
             "facts": len(p1["atomic_facts"]),
             "conflicts": total_conflicts if i == 0 else 0,
             "parsed_facts": p1.get("parsed_facts", []),
+            "fact_ids": p1.get("fact_ids", []),
         })
 
     return results
@@ -365,45 +366,29 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     print(f"\n  Pipeline complete in {time.time() - pipeline_start:.1f}s")
 
-    # Post-pipeline: summary, profile, categories — all independent, run in parallel
+    # Post-pipeline: summary, profile, categories, consolidation — all independent, run in parallel
     from memory_layer.profile_extractor import update_category_profiles
+    from memory_layer.consolidator import consolidate_facts
     from agentic_layer.fetch_mem_service import invalidate_category_cache
 
     new_facts_by_category = {}
+    all_parsed_facts = []
+    all_fact_ids = []
     for r in all_results:
         for pf in r.get("parsed_facts", []):
             cat = pf.get("category", "general")
             if cat not in new_facts_by_category:
                 new_facts_by_category[cat] = []
             new_facts_by_category[cat].append(pf["text"])
+        all_parsed_facts.extend(r.get("parsed_facts", []))
+        all_fact_ids.extend(r.get("fact_ids", []))
 
     post_start = time.time()
-    print(f"\n[post-pipeline] Running summary + session_summary + profile + categories in parallel...")
+    print(f"\n[post-pipeline] Running summary + profile + categories + consolidation in parallel...")
 
     def _run_summary():
         t = time.time()
         _rebuild_conversation_summary(all_new_episodes, current_date)
-        return time.time() - t
-
-    def _run_session_summary():
-        """Store per-session summary."""
-        t = time.time()
-        if not all_new_episodes:
-            return 0.0
-        episodes_text = "\n".join(f"- {ep}" for ep in all_new_episodes)
-        prompt = f"""Summarize this conversation session in 3-5 sentences. Focus on key events, decisions, and new information shared.
-
-EPISODES (from session dated {current_date}):
-{episodes_text}
-
-Return ONLY the summary text, no JSON or formatting."""
-        try:
-            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-            summary = response.text.strip()
-            db.insert_session_summary(source_id, current_date, summary)
-            print(f"  [session-summary] Stored ({len(summary)} chars)")
-        except Exception as e:
-            print(f"  [session-summary] Failed: {e}")
         return time.time() - t
 
     def _run_profile():
@@ -419,19 +404,40 @@ Return ONLY the summary text, no JSON or formatting."""
             invalidate_category_cache()
         return time.time() - t
 
+    def _run_consolidation():
+        t = time.time()
+        if not all_parsed_facts:
+            return 0.0
+        entries = consolidate_facts(all_parsed_facts, all_fact_ids)
+        if entries:
+            cf_texts = [e["consolidated_text"] for e in entries]
+            cf_embeddings = embed_texts(cf_texts)
+            for entry, emb in zip(entries, cf_embeddings):
+                cf = ConsolidatedFact(
+                    consolidated_text=entry["consolidated_text"],
+                    fact_ids=entry["fact_ids"],
+                    source_id=source_id,
+                    conversation_date=current_date,
+                    embedding=emb,
+                )
+                cf_id = db.insert_consolidated_fact(cf)
+                vector_store.upsert_consolidated_fact(cf_id, emb, current_date)
+            print(f"  [consolidation] Stored {len(entries)} consolidated facts")
+        return time.time() - t
+
     with ThreadPoolExecutor(max_workers=4) as post_executor:
         summary_future = post_executor.submit(_run_summary)
-        session_summary_future = post_executor.submit(_run_session_summary)
         profile_future = post_executor.submit(_run_profile)
         category_future = post_executor.submit(_run_categories)
+        consolidation_future = post_executor.submit(_run_consolidation)
 
         summary_time = summary_future.result()
-        session_summary_time = session_summary_future.result()
         profile_time = profile_future.result()
         category_time = category_future.result()
+        consolidation_time = consolidation_future.result()
 
     post_total = time.time() - post_start
-    print(f"  [post-pipeline] Summary: {summary_time:.1f}s | Session: {session_summary_time:.1f}s | Profile: {profile_time:.1f}s | Categories: {category_time:.1f}s | Total: {post_total:.1f}s (parallel)")
+    print(f"  [post-pipeline] Summary: {summary_time:.1f}s | Profile: {profile_time:.1f}s | Categories: {category_time:.1f}s | Consolidation: {consolidation_time:.1f}s | Total: {post_total:.1f}s (parallel)")
 
     total_memcells = len(all_results)
     total_conflicts = sum(r["conflicts"] for r in all_results)
@@ -446,6 +452,7 @@ def reset_databases():
     conn = db.get_connection()
     cur = conn.cursor()
     cur.execute("""
+        DROP TABLE IF EXISTS consolidated_facts CASCADE;
         DROP TABLE IF EXISTS session_summaries CASCADE;
         DROP TABLE IF EXISTS profile_categories CASCADE;
         DROP TABLE IF EXISTS conflicts CASCADE;
@@ -462,7 +469,7 @@ def reset_databases():
     from qdrant_client import QdrantClient
     from config import QDRANT_HOST, QDRANT_PORT
     qclient = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, prefer_grpc=False, timeout=30)
-    for name in ("facts", "scenes"):
+    for name in ("facts", "scenes", "consolidated_facts"):
         if qclient.collection_exists(name):
             qclient.delete_collection(name)
 

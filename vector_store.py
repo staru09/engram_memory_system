@@ -21,21 +21,66 @@ def get_client() -> QdrantClient:
 def init_collections():
     """Create Qdrant collections if they don't exist, and ensure payload indexes."""
     client = get_client()
-    for name in ("facts",):
+    for name in ("facts", "consolidated_facts"):
         if not client.collection_exists(name):
             client.create_collection(
                 collection_name=name,
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
                 timeout=60,
             )
-    try:
-        client.create_payload_index(
-            collection_name="facts",
-            field_name="conversation_date",
-            field_schema=PayloadSchemaType.INTEGER,
+    for col in ("facts", "consolidated_facts"):
+        try:
+            client.create_payload_index(
+                collection_name=col,
+                field_name="conversation_date",
+                field_schema=PayloadSchemaType.INTEGER,
+            )
+        except Exception:
+            pass
+
+def upsert_consolidated_fact(cf_id: int, embedding: list[float],
+                             conversation_date: str = None):
+    client = get_client()
+    payload = {"consolidated_fact_id": cf_id}
+    if conversation_date:
+        payload["conversation_date"] = _date_to_int(conversation_date)
+    client.upsert(
+        collection_name="consolidated_facts",
+        points=[PointStruct(id=cf_id, vector=embedding, payload=payload)],
+    )
+
+
+def search_consolidated_facts(query_embedding: list[float], top_k: int = 5,
+                               date_filter: dict = None) -> list[dict]:
+    client = get_client()
+    query_filter = None
+    if date_filter:
+        query_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="conversation_date",
+                    range=Range(
+                        gte=_date_to_int(date_filter["date_from"]),
+                        lte=_date_to_int(date_filter["date_to"]),
+                    ),
+                )
+            ]
         )
-    except Exception:
-        pass
+    results = client.query_points(
+        collection_name="consolidated_facts",
+        query=query_embedding,
+        limit=top_k,
+        with_payload=True,
+        query_filter=query_filter,
+    )
+    return [
+        {
+            "consolidated_fact_id": hit.payload["consolidated_fact_id"],
+            "score": hit.score,
+        }
+        for hit in results.points
+    ]
+
 
 def _date_to_int(date_str: str) -> int:
     """Convert 'YYYY-MM-DD' to integer YYYYMMDD for Qdrant numeric filtering."""

@@ -16,6 +16,18 @@ class AtomicFact:
 
 
 @dataclass
+class ConsolidatedFact:
+    id: Optional[int] = None
+    consolidated_text: str = ""
+    fact_ids: list[int] = field(default_factory=list)
+    metadata: Optional[dict] = field(default_factory=dict)
+    source_id: str = ""
+    conversation_date: Optional[str] = None
+    embedding: Optional[list[float]] = None
+    created_at: Optional[datetime] = None
+
+
+@dataclass
 class ProfileCategory:
     id: Optional[int] = None
     category_name: str = ""
