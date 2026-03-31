@@ -2,7 +2,7 @@ import time
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
-from config import RETRIEVAL_TOP_K
+from config import RETRIEVAL_TOP_K, COHERE_API_KEY
 import db
 from agentic_layer.retrieval_utils import (
     hybrid_search, filter_active_foresight, deduplicate_facts,
@@ -10,8 +10,54 @@ from agentic_layer.retrieval_utils import (
 from agentic_layer.vectorize_service import embed_text
 from agentic_layer.temporal_parser import parse_temporal_query
 
+# Cohere reranker
+_cohere_client = None
 
-FAST_FACTS_LIMIT = 5
+def _get_cohere_client():
+    global _cohere_client
+    if _cohere_client is None and COHERE_API_KEY:
+        import cohere
+        _cohere_client = cohere.Client(api_key=COHERE_API_KEY)
+    return _cohere_client
+
+
+_last_rerank_time = 0
+
+def rerank_facts(query: str, facts: list[dict], top_k: int = 5) -> list[dict]:
+    """Rerank facts using Cohere reranker. Rate-limited to 10 req/min. Falls back if unavailable."""
+    global _last_rerank_time
+    client = _get_cohere_client()
+    if not client or not facts:
+        return facts[:top_k]
+
+    # Rate limit: 10 req/min = 1 req per 6s
+    elapsed = time.time() - _last_rerank_time
+    if elapsed < 6:
+        time.sleep(6 - elapsed)
+
+    try:
+        t0 = time.time()
+        _last_rerank_time = time.time()
+        documents = [f["fact_text"] for f in facts]
+        response = client.rerank(
+            query=query,
+            documents=documents,
+            top_n=top_k,
+            model="rerank-v3.5",
+        )
+        reranked = []
+        for result in response.results:
+            fact = facts[result.index].copy()
+            fact["rerank_score"] = result.relevance_score
+            reranked.append(fact)
+        print(f"  [retrieval] Rerank: {len(facts)} → {len(reranked)} facts ({time.time() - t0:.2f}s)")
+        return reranked
+    except Exception as e:
+        print(f"  [retrieval] Rerank failed ({e}), using RRF order")
+        return facts[:top_k]
+
+
+FAST_FACTS_LIMIT = 10
 FAST_FACT_MIN_SCORE = 0.005
 FAST_FORESIGHT_MIN_SIM = 0.7
 
@@ -176,20 +222,21 @@ def retrieve_fast(query: str, query_time: datetime = None,
     profile_future = parallel_executor.submit(_run_profile)
 
     # Step 3: Hybrid search (keyword + vector → RRF)
+    search_k = top_k_facts
     t0 = time.time()
     if is_mixed:
-        historical_facts = hybrid_search(query, top_k_facts,
+        historical_facts = hybrid_search(query, search_k,
                                          query_time=effective_query_time,
                                          query_embedding=query_embedding, date_filter=date_filter)
-        current_facts = hybrid_search(query, top_k_facts, query_time=query_time,
+        current_facts = hybrid_search(query, search_k, query_time=query_time,
                                       query_embedding=query_embedding, date_filter=None)
         top_facts = _merge_fact_results(historical_facts, current_facts)
     else:
-        top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
+        top_facts = hybrid_search(query, search_k, query_time=effective_query_time,
                                   query_embedding=query_embedding, date_filter=date_filter)
         if date_filter and len(top_facts) < 3:
             print(f"  [retrieval] Date filter returned {len(top_facts)} facts, retrying without filter")
-            top_facts = hybrid_search(query, top_k_facts, query_time=effective_query_time,
+            top_facts = hybrid_search(query, search_k, query_time=effective_query_time,
                                       query_embedding=query_embedding, date_filter=None)
 
     step_timing["search_s"] = round(time.time() - t0, 3)
@@ -242,7 +289,7 @@ def retrieve_fast(query: str, query_time: datetime = None,
         mid = f.get("memcell_id")
         if mid and (mid not in memcell_scores or f["rrf_score"] > memcell_scores[mid]):
             memcell_scores[mid] = f["rrf_score"]
-    ranked_memcell_ids = sorted(memcell_scores.keys(), key=lambda m: -memcell_scores[m])[:5]
+    ranked_memcell_ids = sorted(memcell_scores.keys(), key=lambda m: -memcell_scores[m])
     memcells_map = db.get_memcells_by_ids(ranked_memcell_ids) if ranked_memcell_ids else {}
     episodes = [memcells_map[mid] for mid in ranked_memcell_ids if mid in memcells_map]
     print(f"  [retrieval] Episodes from {len(ranked_memcell_ids)} memcells: {len(episodes)} ({time.time() - t0:.2f}s)")

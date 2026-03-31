@@ -98,14 +98,13 @@ def ingest_conversation(sample: dict):
     stats = db.get_system_stats()
     print(f"  Facts: {stats['active_facts']} active / {stats['total_facts']} total")
     print(f"  MemCells: {stats['total_memcells']}")
-    print(f"  Scenes: {stats['total_scenes']}")
     print(f"  Conflicts: {stats['total_conflicts']}")
 
 
 def _process_single_qa(qa: dict, index: int, total: int, use_fast: bool,
                        client, model, query_time=None) -> dict:
     """Process a single QA pair: retrieve -> answer -> judge. Thread-safe."""
-    from agentic_layer.fetch_mem_service import retrieve_fast, retrieve, compose_context_fast, compose_context
+    from agentic_layer.fetch_mem_service import retrieve_fast, compose_context_fast, compose_context
 
     question = qa["question"]
     ground_truth = qa.get("answer", qa.get("adversarial_answer", ""))
@@ -121,7 +120,7 @@ def _process_single_qa(qa: dict, index: int, total: int, use_fast: bool,
             result = retrieve_fast(question, query_time)
             context = compose_context_fast(result)
         else:
-            result = retrieve(question, query_time)
+            result = retrieve_fast(question, query_time)
             context = compose_context(result)
     except Exception as e:
         print(f"  [{index+1}/{total}] ({cat_name}) RETRIEVAL ERROR: {e}")

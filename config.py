@@ -32,5 +32,8 @@ RRF_KEYWORD_WEIGHT = float(os.getenv("RRF_KEYWORD_WEIGHT", "1.5"))
 RRF_VECTOR_WEIGHT = float(os.getenv("RRF_VECTOR_WEIGHT", "1.0"))
 FACT_DEDUP_THRESHOLD = float(os.getenv("FACT_DEDUP_THRESHOLD", "0.9"))
 
+# Cohere
+COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
+
 # Embedding dimension (gemini-embedding-001 outputs 3072-dim by default)
 EMBEDDING_DIM = 3072
