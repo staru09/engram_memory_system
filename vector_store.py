@@ -63,12 +63,14 @@ def upsert_fact(fact_id: int, memcell_id: int, embedding: list[float],
 
 
 def search_facts(query_embedding: list[float], top_k: int = 10,
-                  date_filter: dict = None, exclude_ids: set = None) -> list[dict]:
+                  date_filter: dict = None, exclude_ids: set = None,
+                  category_name: str = None) -> list[dict]:
     """Semantic search over atomic fact embeddings. Returns list of {fact_id, memcell_id, score}.
 
     Args:
         date_filter: Optional {"date_from": "YYYY-MM-DD", "date_to": "YYYY-MM-DD"}
         exclude_ids: Optional set of fact IDs to exclude from results
+        category_name: Optional category to filter by (only match same category)
     """
     client = get_client()
     must_conditions = []
@@ -83,6 +85,11 @@ def search_facts(query_embedding: list[float], top_k: int = 10,
                     lte=_date_to_int(date_filter["date_to"]),
                 ),
             )
+        )
+
+    if category_name:
+        must_conditions.append(
+            FieldCondition(key="category_name", match=MatchValue(value=category_name))
         )
 
     if exclude_ids:

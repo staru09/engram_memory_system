@@ -255,9 +255,11 @@ async def _store_batch_async(batch_extractions: list[dict], episode_embeddings: 
     all_facts_with_embeddings = []
     for p1 in phase1_results:
         all_batch_fact_ids.update(p1.get("fact_ids", []))
-        fact_texts = [pf["text"] for pf in p1["parsed_facts"]]
-        for fid, ft, emb in zip(p1["fact_ids"], fact_texts, p1["embeddings"]):
-            all_facts_with_embeddings.append({"fact_id": fid, "fact_text": ft, "embedding": emb})
+        for fid, pf, emb in zip(p1["fact_ids"], p1["parsed_facts"], p1["embeddings"]):
+            all_facts_with_embeddings.append({
+                "fact_id": fid, "fact_text": pf["text"],
+                "embedding": emb, "category": pf.get("category", "general"),
+            })
 
     # Skip if too few pre-existing facts (nothing to conflict with)
     stats = db.get_system_stats()

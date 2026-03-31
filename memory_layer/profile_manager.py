@@ -14,7 +14,7 @@ _BATCH_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "conflic
 
 # Facts with similarity above this threshold are checked for contradiction.
 
-CONFLICT_SIMILARITY_THRESHOLD = 0.7
+CONFLICT_SIMILARITY_THRESHOLD = 0.85
 
 
 def _load_prompt():
@@ -318,23 +318,26 @@ def _find_all_candidates_batched(facts_with_embeddings: list[dict],
     search_start = time.time()
 
     def _search_one_fact(new_fact):
-        """Run vector + keyword search for one fact, return raw candidates."""
-        # Vector search — exclude batch facts at Qdrant level
+        """Run vector + keyword search for one fact, return raw candidates (same category only)."""
+        category = new_fact.get("category")
+
+        # Vector search — exclude batch facts + filter by same category
         similar = vector_store.search_facts(new_fact["embedding"], top_k=3,
-                                            exclude_ids=exclude_ids)
+                                            exclude_ids=exclude_ids,
+                                            category_name=category)
         vector_cands = [
             hit for hit in similar
             if hit["score"] >= CONFLICT_SIMILARITY_THRESHOLD
         ]
         seen = {hit["fact_id"] for hit in vector_cands}
 
-        # Keyword search — exclude batch facts at SQL level
+        # Keyword search — exclude batch facts, filter by category after fetch
         keyword_hits = db.keyword_search_facts(new_fact["fact_text"], top_k=3,
                                                exclude_ids=exclude_ids)
         keyword_cands = [
             {"fact_id": row["id"], "memcell_id": row["memcell_id"], "score": float(row["rank"])}
             for row in keyword_hits
-            if row["id"] not in seen
+            if row["id"] not in seen and (not category or row.get("category_name") == category)
         ]
 
         return {"new_fact": new_fact, "candidates": vector_cands + keyword_cands}
