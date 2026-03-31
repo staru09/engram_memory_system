@@ -30,7 +30,14 @@ def segment_conversation(conversation: list[dict]) -> list[dict]:
     )
 
     prompt = _load_prompt().replace("{conversation}", conv_text)
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    for attempt in range(3):
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        if response.text is not None:
+            break
+        if attempt < 2:
+            import time; time.sleep(2)
+    else:
+        raise RuntimeError("Gemini returned empty response for segmentation after 3 attempts")
 
     text = response.text.strip()
     # Strip markdown code fences if present
