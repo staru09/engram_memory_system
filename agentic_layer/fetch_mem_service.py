@@ -257,13 +257,12 @@ def retrieve_fast(query: str, query_time: datetime = None,
         active_foresight, foresight_duration = foresight_future.result()
         category_profiles = category_future.result()
         profile = profile_future.result()
-        consolidated_facts = consolidated_future.result()
         parallel_executor.shutdown(wait=False)
         step_timing["foresight_s"] = round(foresight_duration, 3)
         step_timing["context_compose_s"] = 0
         print(f"  [retrieval] No facts found. Total: {time.time() - retrieval_start:.2f}s")
         return {"episodes": [], "foresight": active_foresight, "profile": profile, "facts": [],
-                "category_profiles": category_profiles, "consolidated_facts": consolidated_facts,
+                "category_profiles": category_profiles, "consolidated_facts": [],
                 "timing": step_timing}
 
     # Fact deduplication

@@ -393,14 +393,15 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     def _run_profile():
         t = time.time()
-        update_user_profile()  # full rebuild from all active facts
+        all_new_facts = [pf["text"] for r in all_results for pf in r.get("parsed_facts", [])]
+        update_user_profile(new_facts=all_new_facts if all_new_facts else None)
         return time.time() - t
 
     def _run_categories():
         t = time.time()
-        affected = set(new_facts_by_category.keys()) if new_facts_by_category else None
-        update_category_profiles(affected)  # full rebuild per affected category
-        invalidate_category_cache()
+        if new_facts_by_category:
+            update_category_profiles(new_facts_by_category)
+            invalidate_category_cache()
         return time.time() - t
 
     def _run_consolidation():
