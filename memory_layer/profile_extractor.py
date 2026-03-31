@@ -112,3 +112,46 @@ def update_category_profiles(new_facts_by_category: dict[str, list[str]]):
         updated = sum(1 for f in as_completed(futures) if f.result() is not None)
 
     print(f"       Category profiles updated: {updated}/{len(new_facts_by_category)} categories")
+
+
+def rebuild_conversation_summary(new_episodes: list[str], current_date: str):
+    """Rebuild the rolling conversation summary after ingesting new episodes."""
+    existing_summary = db.get_conversation_summary()
+
+    if not new_episodes:
+        return
+
+    episodes_text = "\n".join(f"- {ep}" for ep in new_episodes)
+
+    if existing_summary:
+        prompt = f"""You are maintaining a rolling summary of a long-term conversation between two people.
+
+EXISTING SUMMARY:
+{existing_summary}
+
+NEW EPISODES (from session dated {current_date}):
+{episodes_text}
+
+Update the summary to incorporate the new episodes. Keep it concise (10-15 sentences max).
+Focus on: key facts about each person, their relationship, ongoing plans, recent events, and any changes.
+Drop details that are no longer relevant (cancelled plans, resolved issues).
+
+Return ONLY the updated summary text, no JSON or formatting."""
+    else:
+        prompt = f"""You are creating a summary of a conversation between two people.
+
+EPISODES (from session dated {current_date}):
+{episodes_text}
+
+Write a concise summary (10-15 sentences max).
+Focus on: key facts about each person, their relationship, plans, events, and preferences.
+
+Return ONLY the summary text, no JSON or formatting."""
+
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        summary = response.text.strip()
+        db.upsert_conversation_summary(summary)
+        print(f"  [summary] Updated ({len(summary)} chars)")
+    except Exception as e:
+        print(f"  [summary] Update failed: {e}")

@@ -658,16 +658,6 @@ def get_memcells_by_ids(memcell_ids: list[int]) -> dict[int, dict]:
     return {row["id"]: row for row in rows}
 
 
-def get_fact_by_id(fact_id: int) -> dict | None:
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM atomic_facts WHERE id = %s", (fact_id,))
-    row = cur.fetchone()
-    cur.close()
-    release_connection(conn)
-    return row
-
-
 def get_facts_by_ids(fact_ids: list[int]) -> dict[int, dict]:
     """Batch fetch multiple facts by ID in a single query. Returns {id: row_dict}."""
     if not fact_ids:
