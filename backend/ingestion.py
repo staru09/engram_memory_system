@@ -22,8 +22,6 @@ INGESTION_BATCH_SIZE = 20  # process N messages at a time
 def run_background_ingestion(thread_id: str, messages: list[dict]):
     """Convert chat messages to conversation format and run existing pipeline in batches."""
     try:
-        from agentic_layer.retrieval_utils import invalidate_foresight_cache
-
         total = len(messages)
         num_batches = (total + INGESTION_BATCH_SIZE - 1) // INGESTION_BATCH_SIZE
         print(f"[Background] Ingesting {total} messages in {num_batches} batches of {INGESTION_BATCH_SIZE}")
@@ -50,7 +48,6 @@ def run_background_ingestion(thread_id: str, messages: list[dict]):
             batch_ids = [msg["id"] for msg in batch]
             db.mark_messages_ingested(batch_ids)
 
-        invalidate_foresight_cache()
         print(f"\n[Background] Done. Ingested {total} messages from thread {thread_id}")
     except Exception as e:
         print(f"[Background] Ingestion failed for thread {thread_id}: {e}")
