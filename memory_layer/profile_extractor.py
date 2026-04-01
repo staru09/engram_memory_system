@@ -26,9 +26,11 @@ def _count_tokens(text: str) -> int:
             contents=text
         )
         return result.total_tokens
-    except Exception:
-        # Fallback: ~4 chars per token
-        return len(text) // 4
+    except Exception as e:
+        # Fallback: ~3.5 chars per token (more conservative)
+        fallback = max(1, int(len(text) / 3.5))
+        print(f"  [tokens] API failed ({e}), using fallback: {fallback}")
+        return fallback
 
 
 def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:

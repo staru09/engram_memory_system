@@ -16,5 +16,5 @@ PG_DB = os.getenv("PG_DB", "evermemos")
 
 # Memory budgets (tokens)
 PROFILE_TOKEN_BUDGET = int(os.getenv("PROFILE_TOKEN_BUDGET", "3000"))
-SUMMARY_TOKEN_BUDGET = int(os.getenv("SUMMARY_TOKEN_BUDGET", "6000"))
+SUMMARY_TOKEN_BUDGET = int(os.getenv("SUMMARY_TOKEN_BUDGET", "12000"))
 COMPRESSION_THRESHOLD = float(os.getenv("COMPRESSION_THRESHOLD", "0.8"))  # 80%
