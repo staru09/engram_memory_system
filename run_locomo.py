@@ -19,10 +19,6 @@ CATEGORY_NAMES = {
 
 
 def parse_locomo_date(date_str: str) -> str:
-    """Parse LoCoMo date format to YYYY-MM-DD.
-    Input:  '8:56 pm on 20 July, 2023'
-    Output: '2023-07-20'
-    """
     if not date_str:
         return "2024-01-01"
     try:
@@ -44,7 +40,6 @@ def load_conversation(sample_idx: int) -> dict:
 
 
 def ingest_conversation(sample: dict):
-    """Ingest all sessions sequentially using v1 pipeline."""
     from main import ingest_conversation as run_ingestion
 
     conv = sample["conversation"]
@@ -56,9 +51,9 @@ def ingest_conversation(sample: dict):
         key=lambda s: int(s.split("_")[1])
     )
 
-    print(f"\n=== INGESTING (v1, per-session sequential) ===")
-    print(f"  Speaker A (user): {speaker_a}")
-    print(f"  Speaker B (assistant): {speaker_b}")
+    print(f"\n=== INGESTING ===")
+    print(f"  Speaker A: {speaker_a}")
+    print(f"  Speaker B: {speaker_b}")
     print(f"  Sessions: {len(sessions)}")
 
     total_turns = 0
@@ -96,15 +91,31 @@ def ingest_conversation(sample: dict):
 
     import db
     stats = db.get_system_stats()
-    print(f"  Facts: {stats['active_facts']} active / {stats['total_facts']} total")
-    print(f"  MemCells: {stats['total_memcells']}")
     print(f"  Conflicts: {stats['total_conflicts']}")
+    print(f"  Active foresight: {stats['active_foresight']}")
+    print(f"  Has profile: {stats['has_profile']}")
 
 
-def _process_single_qa(qa: dict, index: int, total: int, use_fast: bool,
+def _get_last_session_date(sample: dict) -> datetime:
+    conv = sample["conversation"]
+    session_keys = sorted(
+        [k for k in conv if k.startswith("session_") and not k.endswith("date_time")],
+        key=lambda s: int(s.split("_")[1])
+    )
+    if not session_keys:
+        return datetime.now(IST).replace(tzinfo=None)
+    last_date_key = f"{session_keys[-1]}_date_time"
+    raw_date = conv.get(last_date_key, "")
+    date_str = parse_locomo_date(raw_date)
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except Exception:
+        return datetime.now(IST).replace(tzinfo=None)
+
+
+def _process_single_qa(qa: dict, index: int, total: int,
                        client, model, query_time=None) -> dict:
-    """Process a single QA pair: retrieve -> answer -> judge. Thread-safe."""
-    from agentic_layer.fetch_mem_service import retrieve_fast, compose_context_fast, compose_context
+    from agentic_layer.fetch_mem_service import retrieve, compose_context
 
     question = qa["question"]
     ground_truth = qa.get("answer", qa.get("adversarial_answer", ""))
@@ -116,12 +127,8 @@ def _process_single_qa(qa: dict, index: int, total: int, use_fast: bool,
     if query_time is None:
         query_time = datetime.now(IST).replace(tzinfo=None)
     try:
-        if use_fast:
-            result = retrieve_fast(question, query_time)
-            context = compose_context_fast(result)
-        else:
-            result = retrieve_fast(question, query_time)
-            context = compose_context(result)
+        result = retrieve(question, query_time)
+        context = compose_context(result)
     except Exception as e:
         print(f"  [{index+1}/{total}] ({cat_name}) RETRIEVAL ERROR: {e}")
         return {
@@ -202,51 +209,26 @@ Return ONLY a JSON: {{"score": N, "reasoning": "brief explanation"}}"""
         "llm_time": llm_time,
         "score": score,
         "reasoning": reasoning,
-        "facts_found": len(result.get("facts", [])),
     }
 
 
-def _get_last_session_date(sample: dict) -> datetime:
-    """Return the date of the last session as a naive datetime (used as query_time reference).
-    This ensures temporal expressions like 'in July' resolve relative to the conversation's
-    timeframe rather than today's date."""
-    conv = sample["conversation"]
-    session_keys = sorted(
-        [k for k in conv if k.startswith("session_") and not k.endswith("date_time")],
-        key=lambda s: int(s.split("_")[1])
-    )
-    if not session_keys:
-        return datetime.now(IST).replace(tzinfo=None)
-    last_date_key = f"{session_keys[-1]}_date_time"
-    raw_date = conv.get(last_date_key, "")
-    date_str = parse_locomo_date(raw_date)
-    try:
-        return datetime.strptime(date_str, "%Y-%m-%d")
-    except Exception:
-        return datetime.now(IST).replace(tzinfo=None)
-
-
-def run_qa(sample: dict, use_fast: bool = True, limit: int = None,
-           parallel_workers: int = 5) -> list[dict]:
-    """Run QA pairs through retrieval pipeline and score answers."""
+def run_qa(sample: dict, limit: int = None, parallel_workers: int = 5) -> list[dict]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from google import genai
     from config import GEMINI_API_KEY, GEMINI_MODEL
 
     client = genai.Client(api_key=GEMINI_API_KEY)
 
-    qa_pairs = [q for q in sample["qa"] if q.get("category") != 5]  # exclude adversarial
+    qa_pairs = [q for q in sample["qa"] if q.get("category") != 5]
     if limit:
         qa_pairs = qa_pairs[:limit]
 
-    # Use last session date as reference for temporal resolution.
-    # "in July" should resolve to July 2023 (conversation timeframe), not July 2025.
     query_time = _get_last_session_date(sample)
     print(f"  Temporal reference date: {query_time.strftime('%Y-%m-%d')} (last session)")
 
     total = len(qa_pairs)
     skipped = len(sample["qa"]) - len(qa_pairs)
-    print(f"\n=== RUNNING QA ({total} questions, {skipped} adversarial skipped, {'fast' if use_fast else 'normal'} mode, {parallel_workers} workers) ===\n")
+    print(f"\n=== RUNNING QA ({total} questions, {skipped} adversarial skipped, {parallel_workers} workers) ===\n")
 
     results = [None] * total
 
@@ -254,7 +236,7 @@ def run_qa(sample: dict, use_fast: bool = True, limit: int = None,
         futures = {}
         for i, qa in enumerate(qa_pairs):
             future = executor.submit(
-                _process_single_qa, qa, i, total, use_fast, client, GEMINI_MODEL, query_time
+                _process_single_qa, qa, i, total, client, GEMINI_MODEL, query_time
             )
             futures[future] = i
 
@@ -276,62 +258,7 @@ def run_qa(sample: dict, use_fast: bool = True, limit: int = None,
     return results
 
 
-def print_report(results: list[dict]):
-    """Print evaluation report."""
-    print(f"\n{'=' * 70}")
-    print(f"  LOCOMO BENCHMARK RESULTS")
-    print(f"{'=' * 70}\n")
-
-    non_adv_results = [r for r in results if r["category"] != 5]
-    adv_results = [r for r in results if r["category"] == 5]
-
-    scores = [r["score"] for r in non_adv_results if r["score"] > 0]
-    avg_score = sum(scores) / len(scores) if scores else 0
-    retrieval_times = [r["retrieval_time"] for r in non_adv_results]
-    avg_retrieval = sum(retrieval_times) / len(retrieval_times) if retrieval_times else 0
-
-    print(f"  Overall (excluding adversarial):")
-    print(f"    Questions: {len(non_adv_results)} (+ {len(adv_results)} adversarial excluded)")
-    print(f"    Avg Score: {avg_score:.2f}/5")
-    print(f"    Score >= 4: {sum(1 for s in scores if s >= 4)}/{len(scores)} ({sum(1 for s in scores if s >= 4)/len(scores)*100:.1f}%)")
-    print(f"    Score >= 3: {sum(1 for s in scores if s >= 3)}/{len(scores)} ({sum(1 for s in scores if s >= 3)/len(scores)*100:.1f}%)")
-    print(f"    Avg Retrieval: {avg_retrieval:.2f}s")
-
-    print(f"\n  Per Category:")
-    print(f"    {'Category':<15} {'Count':>6} {'Avg Score':>10} {'>=4':>6} {'>=3':>6}")
-    print(f"    {'-'*15} {'-'*6} {'-'*10} {'-'*6} {'-'*6}")
-
-    for cat_num in sorted(CATEGORY_NAMES.keys()):
-        if cat_num == 5:
-            continue  # skip adversarial
-        cat_results = [r for r in results if r["category"] == cat_num and r["score"] > 0]
-        if not cat_results:
-            continue
-        cat_scores = [r["score"] for r in cat_results]
-        avg = sum(cat_scores) / len(cat_scores)
-        gte4 = sum(1 for s in cat_scores if s >= 4)
-        gte3 = sum(1 for s in cat_scores if s >= 3)
-        name = CATEGORY_NAMES[cat_num]
-        print(f"    {name:<15} {len(cat_results):>6} {avg:>10.2f} {gte4:>5} {gte3:>5}")
-
-    worst = sorted([r for r in non_adv_results if r["score"] > 0], key=lambda x: x["score"])[:5]
-    if worst:
-        print(f"\n  Worst Answers:")
-        for r in worst:
-            print(f"    [{r['cat_name']}] Score {r['score']}/5: {r['question'][:60]}")
-            print(f"      GT:  {r['ground_truth'][:60]}")
-            print(f"      Got: {r['answer'][:60]}")
-            print()
-
-    output_path = "benchmark_results/locomo_results_local_fast.json"
-    os.makedirs("benchmark_results", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"  Full results saved to {output_path}")
-
-
 def print_report_tagged(results: list[dict], tag: str):
-    """Print report and save to a tagged output file (fast/normal + branch label)."""
     print(f"\n{'=' * 70}")
     print(f"  LOCOMO BENCHMARK RESULTS  [{tag}]")
     print(f"{'=' * 70}\n")
@@ -377,75 +304,34 @@ def print_report_tagged(results: list[dict], tag: str):
             print(f"      Got: {r['answer'][:60]}")
             print()
 
-    output_path = f"benchmark_results/memU_category_update_prompt_{tag}.json"
+    output_path = f"benchmark_results/gpt_style_{tag}.json"
     os.makedirs("benchmark_results", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"  Full results saved to {output_path}")
 
 
-def _get_last_session_date(sample: dict) -> datetime:
-    """Return the last session date as a naive datetime.
-    Used as the temporal reference so month-name queries like 'in July'
-    resolve to the conversation's timeframe, not today's date."""
-    conv = sample["conversation"]
-    session_keys = sorted(
-        [k for k in conv if k.startswith("session_") and not k.endswith("date_time")],
-        key=lambda s: int(s.split("_")[1])
-    )
-    if not session_keys:
-        return datetime.now(IST).replace(tzinfo=None)
-    last_date_key = f"{session_keys[-1]}_date_time"
-    raw_date = conv.get(last_date_key, "")
-    date_str = parse_locomo_date(raw_date)
-    try:
-        return datetime.strptime(date_str, "%Y-%m-%d")
-    except Exception:
-        return datetime.now(IST).replace(tzinfo=None)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Run LoCoMo benchmark")
     parser.add_argument("--sample", type=int, default=0, help="Sample index (0-9)")
-    parser.add_argument("--fast", action="store_true", help="Run fast mode only")
-    parser.add_argument("--normal", action="store_true", help="Run normal mode only")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of QA pairs")
-    parser.add_argument("--skip-ingest", action="store_true", help="Skip ingestion (use existing data)")
+    parser.add_argument("--skip-ingest", action="store_true", help="Skip ingestion")
     parser.add_argument("--reset", action="store_true", help="Reset DB before ingestion")
-    parser.add_argument("--workers", type=int, default=5, help="Parallel workers for QA (default: 5)")
+    parser.add_argument("--workers", type=int, default=5, help="Parallel workers for QA")
     args = parser.parse_args()
 
     sample = load_conversation(args.sample)
     print(f"Loaded sample {args.sample}: {len(sample['qa'])} QA pairs")
 
     if args.reset:
-        print("\nResetting databases...")
-        from utils.recreate import reset_postgres, reset_qdrant
-        import db
-        import vector_store
-        db.init_schema()
-        reset_postgres()
-        reset_qdrant()
+        from main import reset_databases
+        reset_databases()
 
     if not args.skip_ingest:
         ingest_conversation(sample)
 
-    # Determine which modes to run
-    if args.fast and not args.normal:
-        modes = [("fast", True)]
-    elif args.normal and not args.fast:
-        modes = [("normal", False)]
-    else:
-        # Default: run both fast then normal
-        modes = [("fast", True), ("normal", False)]
-
-    for tag, use_fast in modes:
-        print(f"\n{'#' * 70}")
-        print(f"  RUNNING MODE: {tag.upper()}")
-        print(f"{'#' * 70}")
-        results = run_qa(sample, use_fast=use_fast, limit=args.limit,
-                         parallel_workers=args.workers)
-        print_report_tagged(results, tag)
+    results = run_qa(sample, limit=args.limit, parallel_workers=args.workers)
+    print_report_tagged(results, "gpt_style")
 
 
 if __name__ == "__main__":

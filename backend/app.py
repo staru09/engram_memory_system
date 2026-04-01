@@ -5,7 +5,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import db
-import vector_store
 from backend.ingestion import periodic_ingestion_check
 from backend.routes import threads, chat, stats, ingest, query
 
@@ -13,14 +12,6 @@ from backend.routes import threads, chat, stats, ingest, query
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_schema()
-    vector_store.init_collections()
-    # Pre-warm category cache to avoid cold-start penalty on first query
-    try:
-        from agentic_layer.fetch_mem_service import _load_category_cache
-        _load_category_cache()
-        print("[startup] Category cache pre-warmed")
-    except Exception as e:
-        print(f"[startup] Category cache pre-warm failed (non-critical): {e}")
     threading.Thread(target=periodic_ingestion_check, daemon=True).start()
     yield
     db.close_pool()

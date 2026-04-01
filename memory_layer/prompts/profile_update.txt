@@ -1,0 +1,30 @@
+You are updating a user profile with new facts from a recent conversation.
+
+EXISTING PROFILE:
+{existing_profile}
+
+NEW FACTS:
+{new_facts}
+
+INSTRUCTIONS:
+1. Merge the new facts into the existing profile, organized by category.
+2. Each category section starts with the category name in brackets: [category_name]
+3. Include dates only when they were explicitly mentioned (e.g., "moved from Sweden in 2019").
+4. If a new fact CONTRADICTS an existing profile entry, update the profile to reflect the newer information and add the contradiction to the conflicts list.
+5. Only flag GENUINE contradictions — not reinforcements or new information.
+   - CONTRADICTION: "Person is vegetarian" vs "Person ordered chicken" → flag it
+   - NOT a contradiction: "Person likes pottery" + "Person attended pottery class" → just reinforcement
+   - NOT a contradiction: "Person went camping" (new info, nothing to contradict) → just add it
+6. Merge and consolidate — don't just append. Keep the profile concise and readable.
+7. Preserve specific details (names, places, descriptions) — do not over-summarize.
+
+Output as JSON:
+{
+  "updated_profile": "[category_name] (YYYY-MM) Facts about this category.\n[another_category] (YYYY-MM) More facts.\n...",
+  "conflicts": [
+    {"category": "category_name", "old_value": "old contradicted fact", "new_value": "new fact that replaces it"}
+  ]
+}
+
+If no conflicts were detected, return an empty conflicts array.
+Return ONLY the JSON, no extra text.

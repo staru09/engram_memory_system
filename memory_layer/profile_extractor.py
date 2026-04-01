@@ -1,157 +1,206 @@
 import json
 import os
 from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL
-from models import UserProfile
+from google.genai import types
+from config import GEMINI_API_KEY, GEMINI_MODEL, PROFILE_TOKEN_BUDGET, SUMMARY_TOKEN_BUDGET, COMPRESSION_THRESHOLD
+from models import ConflictLog
 import db
-from agentic_layer.vectorize_service import embed_text
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "profile_extraction.txt")
-_CATEGORY_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "category_profile.txt")
+_PROFILE_UPDATE_PATH = os.path.join(os.path.dirname(__file__), "prompts", "profile_update.txt")
+_SUMMARY_COMPRESS_PATH = os.path.join(os.path.dirname(__file__), "prompts", "summary_compression.txt")
+_PROFILE_COMPRESS_PATH = os.path.join(os.path.dirname(__file__), "prompts", "profile_compression.txt")
 
 
-def _load_prompt():
-    with open(_PROMPT_PATH) as f:
+def _load_prompt(path):
+    with open(path) as f:
         return f.read()
 
 
-def _load_category_prompt():
-    with open(_CATEGORY_PROMPT_PATH) as f:
-        return f.read()
+def _count_tokens(text: str) -> int:
+    """Count tokens using Gemini API."""
+    try:
+        result = client.models.count_tokens(
+            model=GEMINI_MODEL,
+            contents=text
+        )
+        return result.total_tokens
+    except Exception:
+        # Fallback: ~4 chars per token
+        return len(text) // 4
 
 
-def update_user_profile(new_facts: list[str] = None):
+def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
+    """Update profile with new facts and detect conflicts.
+
+    Args:
+        new_facts: list of {"text": ..., "category": ..., "date": ...}
+
+    Returns:
+        (updated_profile_text, conflicts_list)
     """
-    Update user profile incrementally with new facts from current batch.
-    Falls back to full rebuild if no new_facts provided (first time / migration).
-    """
-    existing = db.get_user_profile()
-    if existing:
-        prev_profile = json.dumps({
-            "explicit_facts": existing.explicit_facts,
-            "implicit_traits": existing.implicit_traits,
-        }, indent=2)
-    else:
-        prev_profile = "None (first time creating profile)"
-
-    if new_facts:
-        facts_text = "\n".join(f"- {f}" for f in new_facts)
-    else:
-        # Fallback: full rebuild (first time or migration)
-        conn = db.get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT fact_text FROM atomic_facts WHERE is_active = TRUE ORDER BY created_at DESC")
-        facts = cur.fetchall()
-        cur.close()
-        db.release_connection(conn)
-        if not facts:
-            return
-        facts_text = "\n".join(f"- {fact_text}" for (fact_text,) in facts)
-
-    prompt_template = _load_prompt()
-    prompt = prompt_template.replace("{previous_profile}", prev_profile).replace("{active_facts}", facts_text)
-
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    text = response.text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        if text.endswith("```"):
-            text = text[:-3]
-
-    parsed = json.loads(text)
-
-    profile = UserProfile(
-        explicit_facts=parsed.get("explicit_facts", []),
-        implicit_traits=parsed.get("implicit_traits", []),
-    )
-    db.upsert_user_profile(profile)
-
-    print(f"       Profile updated: {len(profile.explicit_facts)} explicit facts, {len(profile.implicit_traits)} implicit traits")
-    return profile
-
-
-def _update_single_category(cat_name: str, new_facts: list[str], prompt_template: str) -> str | None:
-    """Update a single category profile incrementally. Returns cat_name on success, None on skip."""
     if not new_facts:
-        return None
+        return db.get_user_profile(), []
 
-    existing = db.get_profile_category(cat_name)
-    prev_summary = existing["summary_text"] if existing and existing.get("summary_text") else "None (first time)"
+    existing_profile = db.get_user_profile()
+    if not existing_profile:
+        existing_profile = "(No profile yet — this is the first update.)"
 
-    facts_text = "\n".join(f"- {f}" for f in new_facts)
-    prompt = prompt_template.replace("{category_name}", cat_name).replace(
-        "{previous_summary}", prev_summary
-    ).replace("{facts_list}", facts_text)
+    # Format new facts grouped by category
+    facts_text = "\n".join(
+        f"- [{f['category']}] ({f.get('date', 'unknown')}) {f['text']}"
+        for f in new_facts
+    )
 
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    summary = response.text.strip()
+    prompt = _load_prompt(_PROFILE_UPDATE_PATH)
+    prompt = prompt.replace("{existing_profile}", existing_profile)
+    prompt = prompt.replace("{new_facts}", facts_text)
 
-    summary_embedding = embed_text(summary)
-    new_count = (existing.get("fact_count", 0) if existing else 0) + len(new_facts)
-    db.upsert_profile_category(cat_name, summary, new_count, summary_embedding)
-    print(f"       [{cat_name}] +{len(new_facts)} new facts → {len(summary)} chars")
-    return cat_name
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            if response.text is None:
+                if attempt < 2:
+                    import time; time.sleep(2)
+                    continue
+                return existing_profile, []
+
+            text = response.text.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1]
+                if text.endswith("```"):
+                    text = text[:-3]
+
+            parsed = json.loads(text)
+            updated_profile = parsed.get("updated_profile", existing_profile)
+            conflicts = parsed.get("conflicts", [])
+
+            # Store profile
+            db.upsert_user_profile(updated_profile)
+
+            # Log conflicts
+            for c in conflicts:
+                db.insert_conflict_log(ConflictLog(
+                    category=c.get("category", "unknown"),
+                    old_value=c.get("old_value", ""),
+                    new_value=c.get("new_value", ""),
+                ))
+
+            print(f"  [profile] Updated ({len(updated_profile)} chars, {len(conflicts)} conflicts)")
+            return updated_profile, conflicts
+
+        except json.JSONDecodeError as e:
+            if attempt < 2:
+                print(f"  [profile] JSON parse error ({e}), retrying...")
+                import time; time.sleep(2)
+                continue
+            print(f"  [profile] Failed after 3 attempts: {e}")
+            return existing_profile, []
+        except Exception as e:
+            if attempt < 2:
+                import time; time.sleep(2)
+                continue
+            print(f"  [profile] Failed: {e}")
+            return existing_profile, []
 
 
-def update_category_profiles(new_facts_by_category: dict[str, list[str]]):
-    """Update category profiles incrementally with only new facts, in parallel."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    if not new_facts_by_category:
+def maybe_compress_profile():
+    """Compress profile if it exceeds 80% of token budget."""
+    profile = db.get_user_profile()
+    if not profile:
         return
 
-    prompt_template = _load_category_prompt()
+    token_count = _count_tokens(profile)
+    threshold = int(PROFILE_TOKEN_BUDGET * COMPRESSION_THRESHOLD)
 
-    with ThreadPoolExecutor(max_workers=len(new_facts_by_category)) as executor:
-        futures = {
-            executor.submit(_update_single_category, cat, facts, prompt_template): cat
-            for cat, facts in new_facts_by_category.items()
-        }
-        updated = sum(1 for f in as_completed(futures) if f.result() is not None)
-
-    print(f"       Category profiles updated: {updated}/{len(new_facts_by_category)} categories")
-
-
-def rebuild_conversation_summary(new_episodes: list[str], current_date: str):
-    """Rebuild the rolling conversation summary after ingesting new episodes."""
-    existing_summary = db.get_conversation_summary()
-
-    if not new_episodes:
+    if token_count < threshold:
         return
 
-    episodes_text = "\n".join(f"- {ep}" for ep in new_episodes)
-
-    if existing_summary:
-        prompt = f"""You are maintaining a rolling summary of a long-term conversation between two people.
-
-EXISTING SUMMARY:
-{existing_summary}
-
-NEW EPISODES (from session dated {current_date}):
-{episodes_text}
-
-Update the summary to incorporate the new episodes. Keep it concise (10-15 sentences max).
-Focus on: key facts about each person, their relationship, ongoing plans, recent events, and any changes.
-Drop details that are no longer relevant (cancelled plans, resolved issues).
-
-Return ONLY the updated summary text, no JSON or formatting."""
-    else:
-        prompt = f"""You are creating a summary of a conversation between two people.
-
-EPISODES (from session dated {current_date}):
-{episodes_text}
-
-Write a concise summary (10-15 sentences max).
-Focus on: key facts about each person, their relationship, plans, events, and preferences.
-
-Return ONLY the summary text, no JSON or formatting."""
+    print(f"  [profile] Compressing ({token_count} tokens, threshold {threshold})...")
+    prompt = _load_prompt(_PROFILE_COMPRESS_PATH)
+    prompt = prompt.replace("{current_profile}", profile)
 
     try:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        summary = response.text.strip()
-        db.upsert_conversation_summary(summary)
-        print(f"  [summary] Updated ({len(summary)} chars)")
+        if response.text:
+            compressed = response.text.strip()
+            db.upsert_user_profile(compressed)
+            new_count = _count_tokens(compressed)
+            print(f"  [profile] Compressed: {token_count} → {new_count} tokens")
     except Exception as e:
-        print(f"  [summary] Update failed: {e}")
+        print(f"  [profile] Compression failed: {e}")
+
+
+def append_to_rolling_summary(facts: list[dict], current_date: str):
+    """Append new date-tagged entries to the Recent section of rolling summary."""
+    if not facts:
+        return
+
+    # Format facts as date-tagged entries
+    new_entries = []
+    for f in facts:
+        date = f.get("date", current_date)
+        new_entries.append(f"[{date}] {f['text']}")
+    new_text = "\n".join(new_entries)
+
+    # Get current summary
+    summary = db.get_conversation_summary()
+    archive = summary["archive_text"]
+    recent = summary["recent_text"]
+
+    # Append to recent
+    if recent:
+        recent = recent + "\n" + new_text
+    else:
+        recent = new_text
+
+    # Count tokens
+    total_text = archive + "\n" + recent if archive else recent
+    token_count = _count_tokens(total_text)
+
+    db.upsert_conversation_summary(archive, recent, token_count)
+    print(f"  [summary] Appended {len(new_entries)} entries to Recent ({token_count} tokens)")
+
+
+def maybe_compress_summary():
+    """Compress rolling summary if it exceeds 80% of token budget."""
+    summary = db.get_conversation_summary()
+    token_count = summary["token_count"]
+    threshold = int(SUMMARY_TOKEN_BUDGET * COMPRESSION_THRESHOLD)
+
+    if token_count < threshold:
+        return
+
+    archive = summary["archive_text"]
+    recent = summary["recent_text"]
+
+    if not recent:
+        return
+
+    # Split recent into lines, take oldest ~40% for compression
+    recent_lines = recent.strip().split("\n")
+    if len(recent_lines) <= 2:
+        return
+
+    split_point = max(1, len(recent_lines) * 2 // 5)
+    entries_to_compress = "\n".join(recent_lines[:split_point])
+    remaining_recent = "\n".join(recent_lines[split_point:])
+
+    print(f"  [summary] Compressing ({token_count} tokens, threshold {threshold})...")
+    print(f"  [summary] Moving {split_point}/{len(recent_lines)} entries to archive")
+
+    prompt = _load_prompt(_SUMMARY_COMPRESS_PATH)
+    prompt = prompt.replace("{existing_archive}", archive if archive else "(Empty — first compression)")
+    prompt = prompt.replace("{entries_to_compress}", entries_to_compress)
+
+    try:
+        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        if response.text:
+            new_archive = response.text.strip()
+            total_text = new_archive + "\n" + remaining_recent
+            new_token_count = _count_tokens(total_text)
+            db.upsert_conversation_summary(new_archive, remaining_recent, new_token_count)
+            print(f"  [summary] Compressed: {token_count} → {new_token_count} tokens")
+    except Exception as e:
+        print(f"  [summary] Compression failed: {e}")

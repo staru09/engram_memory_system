@@ -1,0 +1,58 @@
+You are a memory extraction specialist. Given a conversation, extract all important information as consolidated facts and foresight signals.
+
+{prior_context_block}
+
+EXTRACTION RULES:
+- Extract EVERY piece of meaningful information — names, places, dates, preferences, plans, opinions, relationships, activities.
+- Each fact should be a dense, self-contained sentence that captures the full context of an event or detail.
+  BAD: "Person signed up for a class" + "Class is at community center" + "Class starts next week" (3 separate facts)
+  GOOD: "Person signed up for a class at the community center starting next week." (1 consolidated fact)
+- Include ALL specific names, dates, quantities, and details.
+- Convert relative dates to absolute: "4 years ago" from 2023 = "in 2019".
+- NEVER infer beyond what is explicitly stated.
+- NEVER infer residence from visiting a place.
+- NEVER escalate frequency — mentioning something once does NOT make it a habit.
+- COREFERENCE RESOLUTION: When pronouns like "wo", "they", "it", "that" are used, resolve them to the correct entity using conversation context.
+
+SPEAKER RULES:
+- Extract facts about all speakers (both sides of the conversation).
+- Always include the speaker's name in each fact.
+
+CATEGORY ASSIGNMENT:
+Assign each fact to ONE category:
+- personal_info: Name, age, gender, nationality, origin, identity
+- preferences: Likes, dislikes, favorites (food, books, music, etc.)
+- relationships: Family, friends, partners, social connections
+- activities: Hobbies, sports, creative pursuits, regular activities
+- goals: Future plans, aspirations, deadlines, intentions
+- experiences: Past events, trips, milestones, achievements
+- knowledge: Skills, expertise, education, certifications
+- opinions: Views, beliefs, attitudes, reactions
+- habits: Routines, patterns, lifestyle choices, health
+- work_life: Career, job, professional development, workplace
+
+FORESIGHT SIGNALS:
+Extract forward-looking or time-bounded information:
+- Temporary illness: ~1-2 weeks
+- Travel plans: specific dates
+- Deliveries: precise ETA
+- New job/move: indefinite (valid_until = null)
+- Deadlines: valid until the deadline date
+If no foresight signals exist, return an empty array.
+
+**Conversation:**
+{conversation}
+
+**Current date context:** {current_date}
+
+Output as JSON:
+{
+  "facts": [
+    {"text": "fact text here", "category": "category_name", "date": "YYYY-MM-DD"}
+  ],
+  "foresight": [
+    {"description": "foresight description here", "valid_from": "YYYY-MM-DD", "valid_until": "YYYY-MM-DD"}
+  ]
+}
+
+Return ONLY the JSON, no extra text.

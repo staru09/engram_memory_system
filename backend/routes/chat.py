@@ -8,7 +8,7 @@ from google import genai
 
 import db
 from config import GEMINI_MODEL
-from agentic_layer.fetch_mem_service import retrieve_simple, compose_context_fast
+from agentic_layer.fetch_mem_service import retrieve, compose_context
 from backend.schemas import ChatRequest
 from backend.gemini import gemini_client, call_gemini_with_tools
 from backend.prompt import build_chat_prompt
@@ -35,8 +35,8 @@ def chat(request: ChatRequest):
     # 3. Retrieve memory context (always fast — profile + category summaries)
     memory_context = ""
     try:
-        result = retrieve_simple(request.message, query_time=query_time.replace(tzinfo=None))
-        memory_context = compose_context_fast(result)
+        result = retrieve(request.message, query_time=query_time.replace(tzinfo=None))
+        memory_context = compose_context(result)
     except Exception as e:
         print(f"[Chat] Memory retrieval failed: {e}")
 
@@ -77,8 +77,8 @@ async def chat_stream(request: ChatRequest):
     # 3. Retrieve memory context (always fast — profile + category summaries)
     memory_context = ""
     try:
-        result = retrieve_simple(request.message, query_time=query_time.replace(tzinfo=None))
-        memory_context = compose_context_fast(result)
+        result = retrieve(request.message, query_time=query_time.replace(tzinfo=None))
+        memory_context = compose_context(result)
     except Exception as e:
         print(f"[Chat Stream] Memory retrieval failed: {e}")
 

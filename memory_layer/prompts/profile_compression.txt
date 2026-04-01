@@ -1,0 +1,16 @@
+You are compressing a user profile that has grown too large. Condense it while preserving the most important information.
+
+CURRENT PROFILE:
+{current_profile}
+
+INSTRUCTIONS:
+1. Each category section has a date tag showing when facts were established.
+2. Prioritize NEWER facts over older ones.
+3. Older facts that are still current and relevant (e.g., "from Sweden", "mother of two") should survive as condensed entries.
+4. Older facts that have been superseded by newer information can be dropped.
+5. Merge similar entries within each category.
+6. Preserve specific details (names, places, descriptions) where possible.
+7. Keep the same [category_name] (date) format.
+8. Target roughly half the current length.
+
+Return ONLY the compressed profile text, no JSON or formatting.
