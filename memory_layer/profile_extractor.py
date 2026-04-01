@@ -165,8 +165,12 @@ def append_to_rolling_summary(facts: list[dict], current_date: str):
     print(f"  [summary] Appended {len(new_entries)} entries to Recent ({token_count} tokens)")
 
 
+ARCHIVE_MAX_RATIO = 0.20  # archive should be ≤20% of total budget
+
+
 def maybe_compress_summary():
-    """Compress rolling summary if it exceeds 80% of token budget."""
+    """Compress rolling summary if it exceeds 80% of token budget.
+    Also cap archive at 20% of budget — re-compress if needed."""
     summary = db.get_conversation_summary()
     token_count = summary["token_count"]
     threshold = int(SUMMARY_TOKEN_BUDGET * COMPRESSION_THRESHOLD)
@@ -200,9 +204,28 @@ def maybe_compress_summary():
         response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         if response.text:
             new_archive = response.text.strip()
+
+            # Check if archive exceeds 20% cap
+            archive_max_tokens = int(SUMMARY_TOKEN_BUDGET * ARCHIVE_MAX_RATIO)
+            archive_tokens = _count_tokens(new_archive)
+
+            if archive_tokens > archive_max_tokens:
+                print(f"  [summary] Archive too large ({archive_tokens} tokens, cap {archive_max_tokens}), re-compressing...")
+                recompress_prompt = _load_prompt(_SUMMARY_COMPRESS_PATH)
+                recompress_prompt = recompress_prompt.replace("{existing_archive}", "(Condense this into a shorter summary)")
+                recompress_prompt = recompress_prompt.replace("{entries_to_compress}", new_archive)
+                try:
+                    recompress_response = client.models.generate_content(model=GEMINI_MODEL, contents=recompress_prompt)
+                    if recompress_response.text:
+                        new_archive = recompress_response.text.strip()
+                        archive_tokens = _count_tokens(new_archive)
+                        print(f"  [summary] Archive re-compressed to {archive_tokens} tokens")
+                except Exception as e:
+                    print(f"  [summary] Archive re-compression failed: {e}")
+
             total_text = new_archive + "\n" + remaining_recent
             new_token_count = _count_tokens(total_text)
             db.upsert_conversation_summary(new_archive, remaining_recent, new_token_count)
-            print(f"  [summary] Compressed: {token_count} → {new_token_count} tokens")
+            print(f"  [summary] Compressed: {token_count} → {new_token_count} tokens (archive: {archive_tokens}, recent: {new_token_count - archive_tokens})")
     except Exception as e:
         print(f"  [summary] Compression failed: {e}")

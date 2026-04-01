@@ -10,11 +10,13 @@ from memory_layer.profile_extractor import (
     maybe_compress_profile, maybe_compress_summary,
 )
 
+PROFILE_UPDATE_INTERVAL = 5  # update profile every Nth ingestion
+
 
 def ingest_conversation(conversation: list[dict], source_id: str = "default",
                         current_date: str = None, interactive: bool = False,
                         extract_all_speakers: bool = False):
-    """Ingestion pipeline: extract → profile update → foresight → rolling summary → compress."""
+    """Ingestion pipeline: extract → summary + foresight + profile (every 5th) → compress."""
     if current_date is None:
         IST = timezone(timedelta(hours=5, minutes=30))
         current_date = datetime.now(IST).strftime("%Y-%m-%d")
@@ -47,8 +49,15 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         print(f"  [extract] Nothing extracted, skipping pipeline.")
         return
 
-    # Steps 2 + 3 + 4 in parallel
-    print(f"[post-extract] Running profile update + foresight + summary append in parallel...")
+    # Get ingestion count
+    ingestion_count = db.get_and_increment_ingestion_count()
+    should_update_profile = (ingestion_count % PROFILE_UPDATE_INTERVAL == 0) or (ingestion_count == 19)
+
+    # Steps 2 + 3 (+ 4 if 5th ingestion) in parallel
+    tasks = "foresight + summary append"
+    if should_update_profile:
+        tasks += f" + profile update (ingestion #{ingestion_count})"
+    print(f"[post-extract] Running {tasks} in parallel...")
     post_start = time.time()
 
     def _run_profile_update():
@@ -58,11 +67,9 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     def _run_foresight():
         t = time.time()
-        # Expire old foresight
         expired = db.expire_foresight(current_date)
         if expired:
             print(f"  [foresight] Expired {expired} entries")
-        # Store new foresight
         for fs in foresight:
             db.insert_foresight(Foresight(
                 description=fs["description"],
@@ -77,22 +84,29 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         return time.time() - t
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        profile_future = executor.submit(_run_profile_update)
         foresight_future = executor.submit(_run_foresight)
         summary_future = executor.submit(_run_summary_append)
 
-        profile_time, conflict_count = profile_future.result()
+        if should_update_profile:
+            profile_future = executor.submit(_run_profile_update)
+
         foresight_time = foresight_future.result()
         summary_time = summary_future.result()
 
-    print(f"  [post-extract] Profile: {profile_time:.1f}s | Foresight: {foresight_time:.1f}s | Summary: {summary_time:.1f}s | Total: {time.time() - post_start:.1f}s (parallel)")
+        if should_update_profile:
+            profile_time, conflict_count = profile_future.result()
+            print(f"  [post-extract] Foresight: {foresight_time:.1f}s | Summary: {summary_time:.1f}s | Profile: {profile_time:.1f}s | Total: {time.time() - post_start:.1f}s")
+        else:
+            conflict_count = 0
+            print(f"  [post-extract] Foresight: {foresight_time:.1f}s | Summary: {summary_time:.1f}s | Total: {time.time() - post_start:.1f}s")
 
-    # Steps 5 + 6: Compression if needed (only when 80% cap hit)
+    # Step 5: Compression if needed
     maybe_compress_summary()
-    maybe_compress_profile()
+    if should_update_profile:
+        maybe_compress_profile()
 
     total_time = time.time() - pipeline_start
-    print(f"\nDone. {len(facts)} facts, {len(foresight)} foresight, {conflict_count} conflicts. Total: {total_time:.1f}s")
+    print(f"\nDone. {len(facts)} facts, {len(foresight)} foresight, {conflict_count} conflicts. Ingestion #{ingestion_count}. Total: {total_time:.1f}s")
 
 
 def reset_databases():
@@ -104,6 +118,7 @@ def reset_databases():
         DROP TABLE IF EXISTS query_logs CASCADE;
         DROP TABLE IF EXISTS conflict_log CASCADE;
         DROP TABLE IF EXISTS conversation_summaries CASCADE;
+        DROP TABLE IF EXISTS ingestion_counter CASCADE;
         DROP TABLE IF EXISTS foresight CASCADE;
         DROP TABLE IF EXISTS user_profile CASCADE;
         DROP TABLE IF EXISTS chat_messages CASCADE;

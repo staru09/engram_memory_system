@@ -97,6 +97,11 @@ def init_schema():
         CREATE INDEX IF NOT EXISTS idx_messages_thread ON chat_messages (thread_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_messages_unprocessed ON chat_messages (ingested) WHERE ingested = FALSE;
 
+        CREATE TABLE IF NOT EXISTS ingestion_counter (
+            id              SERIAL PRIMARY KEY,
+            count           INTEGER DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS query_logs (
             id                  SERIAL PRIMARY KEY,
             thread_id           VARCHAR(100),
@@ -240,6 +245,25 @@ def upsert_conversation_summary(archive_text: str, recent_text: str, token_count
     conn.commit()
     cur.close()
     release_connection(conn)
+
+
+# ── Ingestion Counter ──
+
+def get_and_increment_ingestion_count() -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, count FROM ingestion_counter LIMIT 1")
+    row = cur.fetchone()
+    if row:
+        new_count = row[1] + 1
+        cur.execute("UPDATE ingestion_counter SET count = %s WHERE id = %s", (new_count, row[0]))
+    else:
+        new_count = 1
+        cur.execute("INSERT INTO ingestion_counter (count) VALUES (%s)", (new_count,))
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return new_count
 
 
 # ── System Stats ──

@@ -1,4 +1,4 @@
-You are updating a user profile with new facts from a recent conversation.
+You are updating a user profile — a short list of stable, long-term facts. The profile should ONLY contain timeless identity facts, NOT events or temporary states.
 
 EXISTING PROFILE:
 {existing_profile}
@@ -6,25 +6,41 @@ EXISTING PROFILE:
 NEW FACTS:
 {new_facts}
 
-INSTRUCTIONS:
-1. Merge the new facts into the existing profile, organized by category.
-2. Each category section starts with the category name in brackets: [category_name]
-3. Include dates only when they were explicitly mentioned (e.g., "moved from Sweden in 2019").
-4. If a new fact CONTRADICTS an existing profile entry, update the profile to reflect the newer information and add the contradiction to the conflicts list.
-5. Only flag GENUINE contradictions — not reinforcements or new information.
-   - CONTRADICTION: "Person is vegetarian" vs "Person ordered chicken" → flag it
-   - NOT a contradiction: "Person likes pottery" + "Person attended pottery class" → just reinforcement
-   - NOT a contradiction: "Person went camping" (new info, nothing to contradict) → just add it
-6. Merge and consolidate — don't just append. Keep the profile concise and readable.
-7. Preserve specific details (names, places, object descriptions, book titles, pet behaviors) — do not over-summarize.
-8. PRIORITIZE specifics over opinions:
-   - KEEP: specific object descriptions, pet behaviors, exact sign/poster text, creative work details, book/song titles
-   - CONDENSE: generic beliefs and sentiments — merge into one short line per person if needed
-   - The [opinions] category should be SHORT. Specific facts, objects, events, and descriptions are more valuable.
+WHAT GOES INTO THE PROFILE:
+- Name, age, gender, origin, nationality
+- Career, job title, education
+- Long-term goals and aspirations
+- Stable preferences (favorite food, books, music, color)
+- Relationships (family, friends, partners — who they are, not what they did)
+- Skills, expertise, certifications
+- Long-term interests and established hobbies
+- Recurring routines and habits (confirmed patterns, not one-off actions)
+- Meaningful possessions (sentimental items, pets with names)
+
+WHAT DOES NOT GO INTO THE PROFILE:
+- One-time events ("attended parade on June 15") → stays in rolling summary
+- Temporary states ("feeling nervous about interview") → stays in rolling summary
+- One-off actions ("ate biryani today") → stays in rolling summary
+- Opinions and beliefs → only if very distinctive and personal
+- Specific activity details ("made a cup with dog face") → stays in rolling summary
+- Short-term plans → handled by foresight
+
+FORMAT:
+- Each fact is ONE bullet point, one line, under 30 words
+- Use "- " prefix for each fact
+- Maximum ~50 facts total
+- No categories, no dates, no paragraphs
+
+MERGE RULES:
+1. ADD new stable facts not already in profile
+2. UPDATE facts that are contradicted by newer information — log the contradiction
+3. Do NOT add events, temporary states, or one-off actions
+4. Merge similar/redundant facts into one
+5. If a new fact contradicts an old one, keep the newer version
 
 Output as JSON:
 {
-  "updated_profile": "[category_name] (YYYY-MM) Facts about this category.\n[another_category] (YYYY-MM) More facts.\n...",
+  "updated_profile": "- Fact one\n- Fact two\n- Fact three",
   "conflicts": [
     {"category": "category_name", "old_value": "old contradicted fact", "new_value": "new fact that replaces it"}
   ]
