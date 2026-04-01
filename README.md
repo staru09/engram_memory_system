@@ -1,240 +1,215 @@
 # AI Companion with Long-Term Memory
 
-A conversational AI companion ("Ira") that remembers past conversations using a structured memory pipeline. It ingests user-assistant dialogues, extracts knowledge (facts, episodes, foresight signals), detects contradictions, and retrieves temporally-aware context for natural Hinglish conversations.
+A conversational AI companion ("Ira") that remembers past conversations using a ChatGPT-inspired memory architecture. No vector search, no RAG — everything is stored in PostgreSQL and included in context every time. 2 LLM calls per ingestion, ~0.01s retrieval.
 
 ## Architecture
 
 ```
 User <-> React Frontend <-> FastAPI Backend <-> Gemini LLM
                               |
-                    +---------+---------+
-                    |                   |
-              PostgreSQL (Supabase)  Qdrant (Vector DB)
-                    |                   |
-                    +---------+---------+
+                          PostgreSQL
                               |
                      Memory Pipeline
-              (Ingestion + Retrieval + Conflict Detection)
+              (Ingestion + Profile + Summary)
 ```
 
 ### Memory System
 
-**Short-term memory:** All unprocessed (not yet ingested) messages from the current thread — provides immediate conversational context.
+**Short-term memory:** Last 100-150 unprocessed messages from the current thread — immediate conversational context.
 
-**Long-term memory:** Structured knowledge extracted via the ingestion pipeline:
-- **Atomic Facts** — discrete, verifiable statements with category assignments (e.g., "Rampal's father's name is Ramesh" [personal_info])
-- **Episodes** — third-person narrative summaries of conversation segments
-- **Foresight Signals** — time-bounded expectations and plans with validity windows
-- **User Profile** — synthesized from all active facts (explicit attributes + implicit traits)
-- **Category Profiles** — rolling LLM-generated summaries per category (personal_info, preferences, experiences, etc.)
-- **Session Summaries** — per-session summaries with embeddings for temporal retrieval
-- **Conversation Summary** — rolling dense summary for cross-session reference resolution
-- **Conflict Detection** — identifies and resolves contradictions between new and existing facts
+**Long-term memory:** 4 components, all included in every LLM prompt:
+
+| Component | Description | Token Budget |
+|-----------|-------------|-------------|
+| **User Profile** | Category-tagged paragraphs (personal_info, activities, goals, etc.) with dates where relevant | 6,000 |
+| **Foresight** | Time-bounded events with `valid_from` / `valid_until`, auto-expired | — |
+| **Rolling Summary (Archive)** | Compressed old events, recurring facts reinforced via recursive compression | ~30% of budget |
+| **Rolling Summary (Recent)** | Detailed date-tagged entries from latest sessions | ~70% of budget |
+| **Conflict Log** | Tracks contradictions detected during profile updates (category, old/new value, resolution) | — |
 
 ---
 
 ## Ingestion Pipeline
 
+**2 LLM calls typical, 3-4 when compression triggers.**
+
 ```
-Chat messages (batched, 20 per batch)
+Conversation (16-20 turns)
+       |
+  [1] EXTRACT (1 LLM call)
+  |   Input: conversation + rolling summary (for coreference)
+  |   Output: consolidated facts (category-tagged, dated) + foresight signals
   |
-  [1] Segmentation (1 LLM call)
-  |   -> 1-2 topic-coherent segments per batch
-  |   -> Greetings/filler turns ignored
-  |   -> Assistant messages tagged [CONTEXT ONLY]
+  [2-4] In parallel:
+  |   [2] UPDATE PROFILE + detect conflicts (1 LLM call)
+  |   |   -> Merges new facts into category sections
+  |   |   -> Flags genuine contradictions (not reinforcements)
+  |   |   -> Logs conflicts to conflict_log table
+  |   |
+  |   [3] STORE FORESIGHT + expire old (DB only)
+  |   |
+  |   [4] APPEND TO ROLLING SUMMARY (no LLM)
+  |       -> Format facts as [date] text, append to Recent
   |
-  [2] Fetch rolling conversation summary (DB read)
-  |   -> Used for cross-session reference resolution
+  [5] If rolling summary >= 80% token budget:
+  |   -> Recursive compression: LLM(old_archive + oldest_recent) -> new_archive
+  |   -> Recurring facts reinforced, one-off events condensed
+  |   -> Dates NEVER dropped
   |
-  [3] Per-segment extraction (N parallel LLM calls)
-  |   -> Episode narrative (2-4 sentences)
-  |   -> Atomic facts with category assignment (from 10 predefined categories)
-  |   -> Foresight signals with validity windows
-  |   -> Source attribution: only user messages as fact sources
-  |   -> [CONTEXT ONLY] assistant lines never used as ground truth
-  |
-  [4] Batch-embed episodes (1 API call)
-  |
-  [5] Two-phase storage:
-  |   Phase 1 (parallel): Store memcell + facts + foresight + scene assignment
-  |   Phase 2 (sequential): Conflict detection per segment
-  |     -> Hybrid candidate search (vector 0.75 threshold + keyword)
-  |     -> Batched LLM contradiction check
-  |     -> Resolution: recency_wins / keep_old / keep_both
-  |
-  [6] Post-pipeline (4 tasks in parallel):
-      -> Rolling conversation summary rebuild
-      -> Per-session summary (stored with embedding)
-      -> User profile update
-      -> Category profile updates (parallel per category)
+  [6] If profile >= 80% token budget:
+      -> Compress profile, prioritize newer facts over older
 ```
 
+### Extraction Details
+- **1 LLM call** per session — no segmentation step
+- Produces **consolidated facts** — dense, self-contained sentences (not atomic fragments)
+- Verbatim details prioritized: sign text, painting descriptions, book titles, pet behaviors, emotional reactions
+- Generic sentiments skipped ("life is a journey", "family is important")
+- Prior rolling summary used as context for coreference resolution
+
+### Compression (inspired by MemGPT)
+- **Recursive**: `new_archive = LLM(existing_archive + oldest_recent_entries)`
+- Never regenerated from scratch — each cycle is additive
+- Recurring facts survive (appear in both archive AND evicted entries)
+- One-off old events get condensed
+- **80% soft trigger** — compress early with breathing room
+
 ### Ingestion Triggers
-- **Automatic**: After 20 unprocessed messages accumulate
+- **Benchmark**: After each session
+- **Production**: After 20 unprocessed messages accumulate
 - **Periodic**: Every 10 minutes, checks for threads with 4+ old unprocessed messages
 - **Manual**: `POST /threads/{thread_id}/ingest`
 
 ---
 
-## Retrieval Pipeline
+## Retrieval
 
-Two modes available, selected by the user in the Query Modal:
-
-### Fast Mode (profile + category summaries only)
+**No search.** Just read profile + foresight + rolling summary from DB and include in prompt.
 
 ```
-Query
+Query comes in
   |
-  [1] Fetch user profile (DB read)
-  [2] Fetch category summaries (DB read)
-  [3] Compose context: profile + category summaries
-  [4] LLM answer
+  Read from DB (parallel):
+  |   +-- user_profile (text)
+  |   +-- active foresight (filtered by query_time)
+  |   +-- conversation_summary (archive + recent)
   |
-  Latency: ~0.5s retrieval + LLM
+  Concatenate into context (~2,700 tokens)
+  |
+  Include in LLM prompt
+  |
+  Latency: ~0.01s retrieval + LLM
 ```
 
-### Normal Mode (full search pipeline)
+### At Inference Time
 
 ```
-Query
-  |
-  [1] Temporal parse (rule-based, LLM fallback for complex expressions)
-  |   -> Hinglish support: kal, parso, pehle, aaj
-  |   -> Date range extraction for historical queries
-  |   -> Mixed query detection (past + present)
-  |
-  [2] Embed query (Gemini API)
-  |
-  [3] Parallel search:
-  |   +-- Keyword search (PostgreSQL tsvector GIN index)
-  |   +-- Vector search (Qdrant cosine similarity)
-  |   +-- Foresight filter (validity windows + semantic relevance)
-  |   +-- Category profile fetch
-  |
-  [4] RRF Fusion (k=60, keyword 1.5x weight, vector 1.0x)
-  |   -> Temporal filter (exclude facts outside date range)
-  |   -> Cosine dedup (> 0.9)
-  |   -> Score filter (< 0.005 dropped)
-  |   -> Superseded fact removal
-  |
-  [5] Episode enrichment (from top fact memcell IDs)
-  |
-  [6] Compose context (hierarchical):
-  |
-  |   === HIGH-LEVEL CONTEXT ===
-  |   User profile (explicit facts + implicit traits)
-  |   Category summaries (matched categories)
-  |
-  |   === DETAILED EVIDENCE ===
-  |   Episodes with dates
-  |   Top-10 facts with dates and RRF scores
-  |   Active foresight signals
-  |
-  [7] LLM answer with time calculator tool
-  |
-  Latency: ~2-4s retrieval + LLM
++-------------------------------------+
+|  System Prompt                      |
++-------------------------------------+
+|  === USER PROFILE ===               |
+|  [personal_info] (2023-06) ...      |
+|  [activities] (2023-08) ...         |
+|                                     |
+|  === UPCOMING / TIME-BOUNDED ===    |
+|  - Event X (valid until: date)      |
+|                                     |
+|  === CONVERSATION HISTORY ===       |
+|  [Archive] compressed old events    |
+|  [Recent] [date] detailed entries   |
++-------------------------------------+
+|  Working Memory (last 100-150 msgs) |
++-------------------------------------+
+|  User's new message                 |
++-------------------------------------+
+
+Total context: ~2,700 tokens (0.27% of 1M context limit)
 ```
-
-### Chat Endpoint
-- Always uses fast mode (profile + category summaries)
-- Recent unprocessed messages provided as short-term context
-- Streaming responses via SSE (`/chat/stream`)
-
-### Temporal Query Handling
-
-| Query Type | Behavior |
-|------------|----------|
-| No date reference | Standard search, profile included |
-| Historical ("What happened in July?") | Date filter applied, profile excluded |
-| Mixed ("Do they still do X?") | Two searches (historical + current), results merged |
 
 ---
 
 ## Data Storage
 
-### PostgreSQL (Supabase)
+### PostgreSQL
 
 | Table | Purpose |
 |-------|---------|
-| `atomic_facts` | Extracted facts with categories, tsvector for keyword search |
-| `memcells` | Episode narratives + raw dialogue + embeddings |
-| `memscenes` | Theme clusters (stored, not used in retrieval) |
-| `foresight` | Future-looking signals with validity windows + embeddings |
-| `conflicts` | Old/new fact pairs with resolution type |
-| `user_profile` | Explicit facts + implicit traits (JSON arrays) |
-| `profile_categories` | Per-category rolling summaries + embeddings |
-| `session_summaries` | Per-session summaries with embeddings |
-| `conversation_summaries` | Rolling dense summary (singleton) |
+| `user_profile` | Category-tagged profile text with dates |
+| `foresight` | Time-bounded events with validity windows |
+| `conversation_summaries` | Two-tier: `archive_text` + `recent_text` + `token_count` |
+| `conflict_log` | Detected contradictions (category, old/new value, resolution) |
 | `chat_threads` | Chat session metadata |
 | `chat_messages` | Raw messages with ingestion status |
 | `query_logs` | Query + response audit trail |
 
-### Qdrant (Vector DB)
-
-| Collection | Purpose |
-|------------|---------|
-| `facts` | Fact embeddings (768-dim Gemini) for semantic search |
-| `scenes` | Scene embeddings (stored, not used in retrieval) |
+No Qdrant. No vector DB. No embeddings.
 
 ---
 
-## Backend Structure
-
-```
-backend/
-  app.py              # FastAPI app, middleware, lifespan, cache pre-warming
-  schemas.py          # Pydantic request/response models
-  gemini.py           # Gemini client, time calculator tool, function calling
-  prompt.py           # Chat + query prompt builders (Hinglish, identity guardrails)
-  ingestion.py        # Batched background ingestion (20 msgs/batch)
-  routes/
-    threads.py        # Thread CRUD + message history
-    chat.py           # /chat + /chat/stream (always fast retrieval)
-    query.py          # /query (fast or normal, user selects)
-    stats.py          # System statistics
-    ingest.py         # Manual ingestion trigger
-
-api.py                # Entry point (re-exports backend.app:app)
-```
-
-## Core Modules
+## Project Structure
 
 ```
 main.py                  # Ingestion pipeline orchestrator
-config.py                # Environment config
+config.py                # Environment config + memory budgets
 db.py                    # PostgreSQL operations (connection pooling)
-vector_store.py          # Qdrant vector operations
-models.py                # Data classes (MemCell, AtomicFact, Foresight, etc.)
+models.py                # Data classes (UserProfile, Foresight, ConflictLog, etc.)
 
 memory_layer/
-  memcell_extractor.py   # Segmentation + [CONTEXT ONLY] tagging
-  episode_extractor.py   # Extraction with retry on JSON parse failure
-  cluster_manager.py     # MemScene clustering (best-effort)
-  profile_manager.py     # Conflict detection (hybrid search, batched LLM)
-  profile_extractor.py   # User profile + category profile synthesis (parallel)
-  prompts/               # LLM prompt templates
+  extractor.py           # Single-call fact + foresight extraction
+  profile_extractor.py   # Profile update, summary append, compression
+  prompts/
+    extraction.txt       # Fact + foresight extraction prompt
+    profile_update.txt   # Profile merge + conflict detection prompt
+    summary_compression.txt  # Recursive archive compression prompt
+    profile_compression.txt  # Profile compression prompt
 
 agentic_layer/
-  fetch_mem_service.py   # retrieve_simple() + retrieve_fast() + context composition
-  retrieval_utils.py     # Hybrid search, foresight caching, deduplication
-  vectorize_service.py   # Embedding service (Gemini)
-  temporal_parser.py     # Rule-based + LLM temporal expression resolution
+  fetch_mem_service.py   # retrieve() + compose_context() — just DB reads
 
-frontend/                # React + Vite chat UI (WhatsApp-style)
+backend/
+  app.py                 # FastAPI app, middleware, lifespan
+  schemas.py             # Pydantic request/response models
+  gemini.py              # Gemini client, time calculator tool
+  prompt.py              # Chat + query prompt builders (Hinglish, identity guardrails)
+  ingestion.py           # Batched background ingestion (20 msgs/batch)
+  routes/
+    threads.py           # Thread CRUD + message history
+    chat.py              # /chat + /chat/stream
+    query.py             # /query endpoint
+    stats.py             # System statistics
+    ingest.py            # Manual ingestion trigger
+
+frontend/                # React + Vite chat UI
 ```
 
 ## Key Features
 
-- **Batched ingestion** — 20 messages per batch, crash-safe (per-batch message marking)
+- **2 LLM calls per ingestion** — extract + profile update (vs 6+ in previous architecture)
+- **No vector search** — everything included in context, ~0.01s retrieval
+- **Consolidated facts** — dense sentences, not atomic fragments
+- **Two-tier rolling summary** — recursive compression preserves dates and recurring facts
+- **Inline conflict detection** — flags genuine contradictions during profile update
+- **Foresight with auto-expiry** — time-bounded events expire when `valid_until` passes
 - **Source attribution** — only user messages extracted as facts, assistant is context-only
-- **Two retrieval modes** — fast (profile + summaries, ~0.5s) and normal (full pipeline, ~2-4s)
 - **Streaming chat** — SSE streaming for real-time response display
-- **Temporal awareness** — Hinglish temporal parsing (kal, parso, pehle) with LLM fallback
-- **Conflict detection** — hybrid candidate search + batched LLM contradiction resolution
-- **Category profiles** — 10 predefined categories with rolling LLM-generated summaries
 - **Identity guardrails** — Ira never reveals AI nature or technical internals
-- **Per-step timing** — retrieval metadata shows timing breakdown in query modal
 
+---
+
+## Benchmark Results (LoCoMo)
+
+Tested on LoCoMo benchmark — long-term conversational memory evaluation with 152-199 QA pairs across single-hop, temporal, multi-hop, and open-domain categories.
+
+| Sample | Speakers | Avg Score | >= 4 | >= 3 | Retrieval |
+|--------|----------|-----------|------|------|-----------|
+| 0 | Caroline & Melanie | 4.49/5 | 84.9% | 90.1% | 0.01s |
+| 1 | Jon & Gina | 4.57/5 | 86.4% | 92.6% | 0.01s |
+| 2 | John & Maria | 4.63/5 | 90.1% | 94.0% | 0.02s |
+| **Average** | | **4.56/5** | **87.1%** | **92.2%** | **0.01s** |
+
+**vs previous RAG architecture:** 4.47/5, 82.2% >= 4, 0.86s retrieval, 6+ LLM calls/session.
+
+---
 
 ## Project Demo
 
