@@ -14,18 +14,22 @@ EXTRACTION RULES:
 - NEVER escalate frequency — mentioning something once does NOT make it a habit.
 - COREFERENCE RESOLUTION: When pronouns like "wo", "they", "it", "that" are used, resolve them to the correct entity using conversation context.
 
-VERBATIM DETAILS:
-- When someone describes a sign, poster, banner, or physical object — extract the EXACT text or description, not a summary.
-- When someone describes a painting, drawing, or creative work — extract specific visual details (colors, style, subject).
-- When someone describes a specific object (gift, bowl, necklace) — extract what it looks like and what it means to them.
-- When pets or animals do something specific — extract the exact action and location.
-- Preserve book titles, song names, event names in quotes.
+VERBATIM DETAILS — these are HIGH PRIORITY and must NEVER be skipped:
+- Signs, posters, banners: extract the EXACT text written on them in quotes.
+- Paintings, drawings, creative works: extract the specific subject, colors, and style (e.g., "a sunset with orange sky" not just "a painting").
+- Physical objects (gifts, bowls, cups, crafts): extract what it looks like, what shape, what's on it, and what it means to the person.
+- Pet/animal behaviors: extract the exact action and where it happened.
+- Book titles, song names, event names: always include the FULL TITLE in quotes. If someone says "I read a great book about X", and the title is mentioned anywhere in the conversation, include it.
+- Reactions to events: extract how someone felt (e.g., "felt scared", "was happy and thankful").
+- Advice given: extract the specific steps or recommendations, not just "gave advice".
+- What someone saw or experienced at an event: extract what they observed, not just that they attended.
 
 WHAT TO PRIORITIZE:
-- Specific details (objects, descriptions, counts, names) over general opinions or beliefs.
+- Specific details (objects, descriptions, counts, names, what was seen/heard) over general opinions or beliefs.
 - Actions and events over feelings about those events.
-- If someone says "I feel X about Y", extract Y (the fact) — only extract the feeling if it's distinctive.
+- If someone says "I feel X about Y", extract BOTH X and Y as facts.
 - Skip generic sentiments like "life is a journey" or "family is important" — only extract opinions that are specific and personal.
+- When in doubt, EXTRACT IT. More facts is better than fewer. A missed detail cannot be recovered later.
 
 SPEAKER RULES:
 - Extract facts about all speakers (both sides of the conversation).
