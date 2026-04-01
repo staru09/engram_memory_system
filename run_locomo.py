@@ -148,8 +148,9 @@ ANSWERING RULES:
 - For "would someone do X" questions: reason from their stated interests, career goals, and preferences. If they previously expressed interest in something but circumstances changed, favour the most recent signal.
 - Trust the MOST RECENT information when facts conflict.
 - Do NOT make up facts. Only use what is explicitly in the context.
-- If the context genuinely doesn't contain the answer, say "I don't know."
+- IMPORTANT: Before saying "I don't know", carefully re-read ALL sections of the context — the answer may be in the profile, the archive, OR the recent entries. Search every section thoroughly.
 - IMPORTANT: Prefer giving a partial answer over "I don't know." If you can find ANY relevant information, share it.
+- When asked "what book" or "what title" — look for quoted titles in the context.
 
 Context:
 {context}
