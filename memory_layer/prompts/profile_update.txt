@@ -16,7 +16,11 @@ INSTRUCTIONS:
    - NOT a contradiction: "Person likes pottery" + "Person attended pottery class" → just reinforcement
    - NOT a contradiction: "Person went camping" (new info, nothing to contradict) → just add it
 6. Merge and consolidate — don't just append. Keep the profile concise and readable.
-7. Preserve specific details (names, places, descriptions) — do not over-summarize.
+7. Preserve specific details (names, places, object descriptions, book titles, pet behaviors) — do not over-summarize.
+8. PRIORITIZE specifics over opinions:
+   - KEEP: specific object descriptions, pet behaviors, exact sign/poster text, creative work details, book/song titles
+   - CONDENSE: generic beliefs and sentiments — merge into one short line per person if needed
+   - The [opinions] category should be SHORT. Specific facts, objects, events, and descriptions are more valuable.
 
 Output as JSON:
 {

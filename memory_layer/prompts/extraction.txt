@@ -14,6 +14,19 @@ EXTRACTION RULES:
 - NEVER escalate frequency — mentioning something once does NOT make it a habit.
 - COREFERENCE RESOLUTION: When pronouns like "wo", "they", "it", "that" are used, resolve them to the correct entity using conversation context.
 
+VERBATIM DETAILS:
+- When someone describes a sign, poster, banner, or physical object — extract the EXACT text or description, not a summary.
+- When someone describes a painting, drawing, or creative work — extract specific visual details (colors, style, subject).
+- When someone describes a specific object (gift, bowl, necklace) — extract what it looks like and what it means to them.
+- When pets or animals do something specific — extract the exact action and location.
+- Preserve book titles, song names, event names in quotes.
+
+WHAT TO PRIORITIZE:
+- Specific details (objects, descriptions, counts, names) over general opinions or beliefs.
+- Actions and events over feelings about those events.
+- If someone says "I feel X about Y", extract Y (the fact) — only extract the feeling if it's distinctive.
+- Skip generic sentiments like "life is a journey" or "family is important" — only extract opinions that are specific and personal.
+
 SPEAKER RULES:
 - Extract facts about all speakers (both sides of the conversation).
 - Always include the speaker's name in each fact.
