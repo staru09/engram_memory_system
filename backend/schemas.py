@@ -13,4 +13,3 @@ class CreateThreadRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     thread_id: str | None = None
-    fast: bool = False

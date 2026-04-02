@@ -100,11 +100,11 @@ export const api = {
     }
   },
 
-  async queryMemory(query: string, threadId?: string, fast?: boolean): Promise<QueryResponse> {
+  async queryMemory(query: string, threadId?: string): Promise<QueryResponse> {
     const response = await fetch(`${API_BASE_URL}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, thread_id: threadId || null, fast: fast || false }),
+      body: JSON.stringify({ query, thread_id: threadId || null }),
     });
     if (!response.ok) throw new Error('Query failed');
     return response.json();
@@ -112,35 +112,9 @@ export const api = {
 };
 
 export interface QueryMetadata {
-  facts: Array<{
-    fact_id: number;
-    fact_text: string;
-    rrf_score: number;
-    conversation_date: string | null;
-    memcell_id: number;
-  }>;
-  episodes: Array<{
-    memcell_id: number;
-    episode_text: string;
-    conversation_date: string | null;
-  }>;
-  foresight: Array<{
-    id: number;
-    description: string;
-    valid_from: string | null;
-    valid_until: string | null;
-    source_date: string | null;
-    query_sim: number | null;
-  }>;
-  mode: 'fast' | 'normal';
-  profile_included: boolean;
   timing: {
     total_retrieval_s: number;
     llm_response_s: number;
-    embedding_s: number;
-    search_s: number;
-    foresight_s: number;
-    context_compose_s: number;
   };
 }
 
