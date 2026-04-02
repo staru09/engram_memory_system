@@ -6,7 +6,10 @@ EXISTING PROFILE:
 NEW FACTS:
 {new_facts}
 
-WHAT GOES INTO THE PROFILE:
+The profile has TWO sections:
+
+## EXPLICIT FACTS
+Things the user directly stated about themselves:
 - Name, age, gender, origin, nationality
 - Career, job title, education
 - Long-term goals and aspirations
@@ -17,7 +20,19 @@ WHAT GOES INTO THE PROFILE:
 - Recurring routines and habits (confirmed patterns, not one-off actions)
 - Meaningful possessions (sentimental items, pets with names)
 
+## IMPLICIT TRAITS
+Personality traits inferred from the user's behavior. Each trait MUST:
+- Be supported by at least 2 different facts or repeated behavior
+- Use [Tag] format: e.g., [Health-Conscious], [Detail-Oriented], [Family-Oriented]
+- Include a brief justification
+
+Examples:
+- [Health-Conscious] — maintains a 6-day gym routine, tracks diet
+- [Detail-Oriented] — remembers specific brands, prices, delivery times
+- [Family-Oriented] — plans around family events, buys gifts for mother
+
 WHAT DOES NOT GO INTO THE PROFILE:
+- Facts about the AI assistant (Ira) — this profile is ONLY about the user
 - One-time events ("attended parade on June 15") → stays in rolling summary
 - Temporary states ("feeling nervous about interview") → stays in rolling summary
 - One-off actions ("ate biryani today") → stays in rolling summary
@@ -27,9 +42,11 @@ WHAT DOES NOT GO INTO THE PROFILE:
 
 FORMAT:
 - Each fact is ONE bullet point, one line, under 30 words
-- Use "- " prefix for each fact
-- Maximum ~50 facts total
+- Use "- " prefix for each explicit fact
+- Use "- [Tag] — justification" for implicit traits
+- Maximum ~50 explicit facts + ~10 implicit traits
 - No categories, no dates, no paragraphs
+- Separate the two sections with a blank line and "## IMPLICIT TRAITS" header
 
 MERGE RULES:
 1. ADD new stable facts not already in profile
@@ -38,9 +55,16 @@ MERGE RULES:
 4. Merge similar/redundant facts into one
 5. If a new fact contradicts an old one, keep the newer version
 
+CONFLICT RULES — be very strict:
+- A conflict is ONLY when two facts are genuinely mutually exclusive (e.g., "lives in Delhi" vs "lives in Mumbai")
+- Adding more detail is NOT a conflict (e.g., "wants MS in Europe" → "considering EPFL or ETH" is a refinement, not a contradiction)
+- Uncertainty is NOT a conflict (e.g., "plans to do MS" + "undecided about MS" — log nothing, just update the fact)
+- NEVER fabricate or infer a new_value — both old_value and new_value MUST come directly from the existing profile or new facts
+- When in doubt, do NOT log a conflict
+
 Output as JSON:
 {
-  "updated_profile": "- Fact one\n- Fact two\n- Fact three",
+  "updated_profile": "- Fact one\n- Fact two\n\n## IMPLICIT TRAITS\n- [Tag] — justification",
   "conflicts": [
     {"category": "category_name", "old_value": "old contradicted fact", "new_value": "new fact that replaces it"}
   ]

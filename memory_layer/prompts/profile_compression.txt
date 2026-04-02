@@ -1,16 +1,21 @@
-You are compressing a user profile that has grown too large. Condense it while preserving the most important information.
+You are compacting a user profile that has grown too large. Your goal is to merge similar items and remove redundancy — NOT to rewrite from scratch.
 
 CURRENT PROFILE:
 {current_profile}
 
-INSTRUCTIONS:
-1. The profile is a list of bullet-point facts about the user.
-2. Merge similar/redundant facts into one.
-3. Drop facts that are less important (temporary states, minor details).
-4. Keep timeless identity facts (name, origin, family, career, core preferences).
-5. Keep facts that appear to be well-established or recurring.
-6. Preserve specific details (names, places, pet names, book titles) where possible.
-7. Output as bullet points, one fact per line, "- " prefix.
-8. Target roughly half the current number of facts.
+COMPACTION RULES:
+1. MERGE similar/overlapping facts into single facts:
+   - "Rampal plans MS in US or Europe" + "Rampal is considering EPFL or ETH" → "Rampal is considering EPFL or ETH Zurich for MS in 2027"
+   - "Rampal likes punk rock" + "Rampal listens to MGK" → "Rampal enjoys punk rock, especially MGK"
+2. REMOVE truly redundant facts (same info stated twice)
+3. KEEP all unique facts intact — do not drop facts just to reduce count
+4. KEEP the two-section format: explicit facts first, then "## IMPLICIT TRAITS" section
+5. Preserve specific details (names, places, brands, relationships) — never generalize them away
+6. Target roughly 70% of the current fact count (merge, don't delete)
 
-Return ONLY the compressed profile text, no JSON or formatting.
+Output format:
+- Each fact is one bullet point, "- " prefix
+- Implicit traits use "- [Tag] — justification" format
+- Sections separated by blank line + "## IMPLICIT TRAITS" header
+
+Return ONLY the compacted profile text, no JSON or extra formatting.

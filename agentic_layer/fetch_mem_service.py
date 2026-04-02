@@ -173,7 +173,9 @@ def compose_chat_context(result: dict) -> str:
         for fs in foresight:
             until = fs.get("valid_until")
             until_str = str(until) if until else "indefinite"
-            parts.append(f"- {fs['description']} (valid until: {until_str})")
+            evidence = fs.get("evidence")
+            evidence_str = f" [source: {evidence}]" if evidence else ""
+            parts.append(f"- {fs['description']} (valid until: {until_str}){evidence_str}")
         parts.append("")
 
     # Profile
@@ -205,7 +207,9 @@ def compose_query_context(result: dict) -> str:
         for fs in foresight:
             until = fs.get("valid_until")
             until_str = str(until) if until else "indefinite"
-            parts.append(f"- {fs['description']} (valid until: {until_str})")
+            evidence = fs.get("evidence")
+            evidence_str = f" [source: {evidence}]" if evidence else ""
+            parts.append(f"- {fs['description']} (valid until: {until_str}){evidence_str}")
         parts.append("")
 
     # Profile

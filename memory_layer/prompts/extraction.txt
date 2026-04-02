@@ -9,10 +9,34 @@ EXTRACTION RULES:
   GOOD: "Person signed up for a class at the community center starting next week." (1 consolidated fact)
 - Include ALL specific names, dates, quantities, and details.
 - Convert relative dates to absolute: "4 years ago" from 2023 = "in 2019".
+- Use dual time format when relative time is mentioned: "3 days ago (March 26, 2026)" — include both relative and absolute.
 - NEVER infer beyond what is explicitly stated.
 - NEVER infer residence from visiting a place.
 - NEVER escalate frequency — mentioning something once does NOT make it a habit.
+- Extract WHAT HAPPENED, not the user's memory of it. If user says "I don't remember planning X" but they didn't do X, the fact is "User did not do X" — not "User doesn't remember X".
+- Facts should be objective statements, not editorial commentary. BAD: "User does not remember his plan." GOOD: "User did not travel to Vimanagar on March 31."
+- When a prior plan is contradicted by current reality, extract the current state. BAD: "User forgot about the train." GOOD: "User is still at home as of April 2 and did not take the train on March 31."
 - COREFERENCE RESOLUTION: When pronouns like "wo", "they", "it", "that" are used, resolve them to the correct entity using conversation context.
+
+ATTRIBUTION RULES:
+- Every fact MUST contain the person's actual name (e.g., "Rampal ordered..." not "the user ordered...")
+- Resolve ALL pronouns to specific names: "he went" → "Rampal went"
+- If the user's name is unknown, use "User" consistently — never "the person", "they", or "someone"
+- Once a name is established in conversation, always use it in all subsequent facts
+
+SPEAKER RULES:
+- Extract facts ONLY about the user (the person talking to the AI assistant).
+- Do NOT extract facts about the AI assistant's opinions, beliefs, plans, or identity.
+- If the assistant recommends something and the user agrees or acts on it, extract the user's action/decision — not the assistant's recommendation.
+
+DO NOT EXTRACT:
+- Greetings and farewells ("hi", "bye", "good night", "take care")
+- Social pleasantries ("how are you", "I'm fine", "nice talking to you")
+- Acknowledgments without content ("okay", "sure", "hmm", "haha", "accha")
+- The AI assistant's responses, opinions, or identity facts
+- Repetitions of already-stated facts within the same conversation
+- Conversation mechanics ("let me tell you", "as I was saying", "you know what")
+- Vague emotional states without context ("I'm happy", "feeling good") — only extract if tied to a specific cause
 
 VERBATIM DETAILS — these are HIGH PRIORITY and must NEVER be skipped:
 - Signs, posters, banners: extract the EXACT text written on them in quotes.
@@ -30,10 +54,6 @@ WHAT TO PRIORITIZE:
 - If someone says "I feel X about Y", extract BOTH X and Y as facts.
 - Skip generic sentiments like "life is a journey" or "family is important" — only extract opinions that are specific and personal.
 - When in doubt, EXTRACT IT. More facts is better than fewer. A missed detail cannot be recovered later.
-
-SPEAKER RULES:
-- Extract facts about all speakers (both sides of the conversation).
-- Always include the speaker's name in each fact.
 
 CATEGORY ASSIGNMENT:
 Assign each fact to ONE category:
@@ -56,6 +76,7 @@ Extract forward-looking or time-bounded information:
 - New job/move: indefinite (valid_until = null)
 - Deadlines: valid until the deadline date
 If no foresight signals exist, return an empty array.
+Each foresight MUST include an "evidence" field — the specific user statement that triggered it.
 
 **Conversation:**
 {conversation}
@@ -68,7 +89,7 @@ Output as JSON:
     {"text": "fact text here", "category": "category_name", "date": "YYYY-MM-DD"}
   ],
   "foresight": [
-    {"description": "foresight description here", "valid_from": "YYYY-MM-DD", "valid_until": "YYYY-MM-DD"}
+    {"description": "foresight description here", "valid_from": "YYYY-MM-DD", "valid_until": "YYYY-MM-DD", "evidence": "user's exact statement or paraphrase that triggered this"}
   ]
 }
 

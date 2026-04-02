@@ -57,6 +57,7 @@ def init_schema():
             description     TEXT NOT NULL,
             valid_from      DATE,
             valid_until     DATE,
+            evidence        TEXT DEFAULT '',
             is_active       BOOLEAN DEFAULT TRUE,
             created_at      TIMESTAMP DEFAULT NOW()
         );
@@ -250,8 +251,8 @@ def insert_foresight(f: Foresight) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO foresight (description, valid_from, valid_until) VALUES (%s, %s, %s) RETURNING id",
-        (f.description, f.valid_from, f.valid_until)
+        "INSERT INTO foresight (description, valid_from, valid_until, evidence) VALUES (%s, %s, %s, %s) RETURNING id",
+        (f.description, f.valid_from, f.valid_until, f.evidence)
     )
     fid = cur.fetchone()[0]
     conn.commit()
@@ -264,7 +265,7 @@ def get_active_foresight(query_time) -> list[dict]:
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
-        SELECT id, description, valid_from, valid_until, created_at
+        SELECT id, description, valid_from, valid_until, evidence, created_at
         FROM foresight
         WHERE is_active = TRUE
           AND valid_from <= %s

@@ -119,6 +119,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
                 description=fs["description"],
                 valid_from=fs.get("valid_from"),
                 valid_until=fs.get("valid_until"),
+                evidence=fs.get("evidence", ""),
             ))
         return time.time() - t
 
