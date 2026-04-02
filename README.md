@@ -1,37 +1,54 @@
 # AI Companion with Long-Term Memory
 
-A conversational AI companion ("Ira") that remembers past conversations using a ChatGPT-inspired memory architecture. No vector search, no RAG — everything is stored in PostgreSQL and included in context every time. 2 LLM calls per ingestion, ~0.01s retrieval.
+A conversational AI companion ("Ira") that remembers past conversations using a ChatGPT-inspired memory architecture. Two retrieval strategies: rolling summary for chat (fast, lossy), hybrid search on permanent facts for precise queries (lossless). 1-2 LLM calls per ingestion.
 
 ## Architecture
 
 ```
 User <-> React Frontend <-> FastAPI Backend <-> Gemini LLM
                               |
-                          PostgreSQL
+                     PostgreSQL + Qdrant
                               |
-                     Memory Pipeline
-              (Ingestion + Profile + Summary)
+                      Memory Pipeline
+               (Ingestion + Profile + Summary + Facts)
 ```
 
 ### Memory System
 
-**Short-term memory:** Last 100-150 unprocessed messages from the current thread — immediate conversational context.
+**Short-term memory:** Last 20-100 unprocessed messages from the current thread — immediate conversational context.
 
-**Long-term memory:** 4 components, all included in every LLM prompt:
+**Long-term memory:** 5 components:
 
-| Component | Description | Token Budget |
-|-----------|-------------|-------------|
-| **User Profile** | Category-tagged paragraphs (personal_info, activities, goals, etc.) with dates where relevant | 6,000 |
-| **Foresight** | Time-bounded events with `valid_from` / `valid_until`, auto-expired | — |
-| **Rolling Summary (Archive)** | Compressed old events, recurring facts reinforced via recursive compression | ~30% of budget |
-| **Rolling Summary (Recent)** | Detailed date-tagged entries from latest sessions | ~70% of budget |
-| **Conflict Log** | Tracks contradictions detected during profile updates (category, old/new value, resolution) | — |
+| Component | Description | Storage |
+|-----------|-------------|---------|
+| **User Profile** | Bullet-point timeless identity facts (~30-50 facts) | PostgreSQL |
+| **Foresight** | Time-bounded events with `valid_from` / `valid_until`, auto-expired | PostgreSQL |
+| **Rolling Summary** | Two-tier: Archive (compressed old) + Recent (date-tagged entries) | PostgreSQL |
+| **Facts Table** | Permanent, never compressed — every extracted fact stored forever | PostgreSQL (tsvector + GIN) |
+| **Facts Vectors** | Embeddings for semantic search | Qdrant (3072-dim, cosine) |
+
+### Two Retrieval Strategies
+
+**Chat endpoint (`/chat`)** — conversational, general awareness:
+```
+Rolling Summary + Profile + Foresight + Working Memory
+→ No search, just DB reads (~0.01s retrieval)
+→ Good for casual conversation
+```
+
+**Query endpoint (`/query`)** — precise recall:
+```
+Hybrid Search (keyword + vector → RRF fusion → top 5 facts)
++ Profile + Foresight
+→ Temporal parser for date-filtered queries
+→ Good for specific questions about the past
+```
 
 ---
 
 ## Ingestion Pipeline
 
-**2 LLM calls typical, 3-4 when compression triggers.**
+**1 LLM call typical, 2 every 5th ingestion, +1 when compression triggers.**
 
 ```
 Conversation (16-20 turns)
@@ -40,38 +57,37 @@ Conversation (16-20 turns)
   |   Input: conversation + rolling summary (for coreference)
   |   Output: consolidated facts (category-tagged, dated) + foresight signals
   |
-  [2-4] In parallel:
-  |   [2] UPDATE PROFILE + detect conflicts (1 LLM call)
-  |   |   -> Merges new facts into category sections
-  |   |   -> Flags genuine contradictions (not reinforcements)
-  |   |   -> Logs conflicts to conflict_log table
-  |   |
-  |   [3] STORE FORESIGHT + expire old (DB only)
-  |   |
-  |   [4] APPEND TO ROLLING SUMMARY (no LLM)
-  |       -> Format facts as [date] text, append to Recent
+  [2] In parallel:
+  |   [2a] Store facts in PostgreSQL (permanent, keyword searchable)
+  |   [2b] Embed facts + store in Qdrant (permanent, vector searchable)
+  |   [2c] Append facts to rolling summary (date-tagged entries)
+  |   [2d] Store foresight + expire old entries
   |
-  [5] If rolling summary >= 80% token budget:
-  |   -> Recursive compression: LLM(old_archive + oldest_recent) -> new_archive
-  |   -> Recurring facts reinforced, one-off events condensed
-  |   -> Dates NEVER dropped
+  [3] Every 5th ingestion:
+  |   UPDATE PROFILE (1 LLM call)
+  |   → Merges new facts into bullet-point profile
+  |   → Inline conflict detection (recency wins)
   |
-  [6] If profile >= 80% token budget:
-      -> Compress profile, prioritize newer facts over older
+  [4] If rolling summary >= 80% of 10k token budget:
+  |   → Recursive compression: LLM(old_archive + oldest_recent) → new_archive
+  |   → Archive capped at 20% of budget
+  |   → Dates NEVER dropped
+  |
+  [5] If profile >= 80% of 3k token budget:
+      → Compress profile (unlikely with bullet-point format)
 ```
 
 ### Extraction Details
 - **1 LLM call** per session — no segmentation step
 - Produces **consolidated facts** — dense, self-contained sentences (not atomic fragments)
-- Verbatim details prioritized: sign text, painting descriptions, book titles, pet behaviors, emotional reactions
+- Verbatim details prioritized: sign text, painting descriptions, book titles, pet behaviors
 - Generic sentiments skipped ("life is a journey", "family is important")
 - Prior rolling summary used as context for coreference resolution
 
 ### Compression (inspired by MemGPT)
 - **Recursive**: `new_archive = LLM(existing_archive + oldest_recent_entries)`
 - Never regenerated from scratch — each cycle is additive
-- Recurring facts survive (appear in both archive AND evicted entries)
-- One-off old events get condensed
+- Recurring facts survive compression, one-off old events get condensed
 - **80% soft trigger** — compress early with breathing room
 
 ### Ingestion Triggers
@@ -84,47 +100,49 @@ Conversation (16-20 turns)
 
 ## Retrieval
 
-**No search.** Just read profile + foresight + rolling summary from DB and include in prompt.
-
+### Chat Endpoint — No Search
 ```
-Query comes in
+User message comes in
   |
-  Read from DB (parallel):
-  |   +-- user_profile (text)
-  |   +-- active foresight (filtered by query_time)
-  |   +-- conversation_summary (archive + recent)
+  Read from DB (parallel, ~0.01s):
+  |   +-- Rolling summary (archive + recent)
+  |   +-- Active foresight (filtered by query_time)
+  |   +-- User profile (bullet points)
   |
-  Concatenate into context (~2,700 tokens)
-  |
-  Include in LLM prompt
-  |
-  Latency: ~0.01s retrieval + LLM
+  Compose context → LLM answers conversationally
 ```
 
-### At Inference Time
-
+### Query Endpoint — Hybrid Search
 ```
-+-------------------------------------+
-|  System Prompt                      |
-+-------------------------------------+
-|  === USER PROFILE ===               |
-|  [personal_info] (2023-06) ...      |
-|  [activities] (2023-08) ...         |
-|                                     |
-|  === UPCOMING / TIME-BOUNDED ===    |
-|  - Event X (valid until: date)      |
-|                                     |
-|  === CONVERSATION HISTORY ===       |
-|  [Archive] compressed old events    |
-|  [Recent] [date] detailed entries   |
-+-------------------------------------+
-|  Working Memory (last 100-150 msgs) |
-+-------------------------------------+
-|  User's new message                 |
-+-------------------------------------+
-
-Total context: ~2,700 tokens (0.27% of 1M context limit)
+User question comes in
+  |
+  [1] TEMPORAL PARSE + EMBED QUERY (parallel)
+  |   Temporal parser: regex pre-filter → LLM date extraction if needed
+  |   Embedding: Gemini embedding-001 (3072-dim)
+  |
+  [2] HYBRID SEARCH (parallel)
+  |   Keyword: PostgreSQL tsvector (ts_rank, OR logic)
+  |   Vector: Qdrant cosine similarity (+ date filter if temporal)
+  |
+  [3] RRF FUSION
+  |   K=60, keyword weight 1.5, vector weight 1.0
+  |   Deduplicate by fact_id → top 5 facts
+  |
+  [4] Compose: matched facts + foresight + profile → LLM answers
 ```
+
+---
+
+## Profile Commands
+
+Users can directly edit their profile via chat:
+
+| Command | Example | Effect |
+|---------|---------|--------|
+| **Remember** | "Remember that I'm allergic to peanuts" | Adds fact to profile |
+| **Forget** | "Forget that I work at Google" | Removes matching line from profile |
+
+Also supports Hinglish: "yaad rakh ki..." / "bhool ja ki..."
 
 ---
 
@@ -134,15 +152,21 @@ Total context: ~2,700 tokens (0.27% of 1M context limit)
 
 | Table | Purpose |
 |-------|---------|
-| `user_profile` | Category-tagged profile text with dates |
+| `user_profile` | Bullet-point profile text |
 | `foresight` | Time-bounded events with validity windows |
 | `conversation_summaries` | Two-tier: `archive_text` + `recent_text` + `token_count` |
+| `facts` | Permanent fact store with tsvector index for keyword search |
 | `conflict_log` | Detected contradictions (category, old/new value, resolution) |
+| `ingestion_counter` | Tracks ingestion count for profile update scheduling |
 | `chat_threads` | Chat session metadata |
 | `chat_messages` | Raw messages with ingestion status |
 | `query_logs` | Query + response audit trail |
 
-No Qdrant. No vector DB. No embeddings.
+### Qdrant
+
+| Collection | Purpose |
+|------------|---------|
+| `facts` | 3072-dim embeddings with payload: fact_text, conversation_date, date_int, category, fact_id |
 
 ---
 
@@ -153,6 +177,7 @@ main.py                  # Ingestion pipeline orchestrator
 config.py                # Environment config + memory budgets
 db.py                    # PostgreSQL operations (connection pooling)
 models.py                # Data classes (UserProfile, Foresight, ConflictLog, etc.)
+vector_store.py          # Qdrant facts collection (embed, search, rebuild)
 
 memory_layer/
   extractor.py           # Single-call fact + foresight extraction
@@ -164,7 +189,10 @@ memory_layer/
     profile_compression.txt  # Profile compression prompt
 
 agentic_layer/
-  fetch_mem_service.py   # retrieve() + compose_context() — just DB reads
+  fetch_mem_service.py   # retrieve_for_chat() + retrieve_for_query() + hybrid search
+  temporal_parser.py     # LLM-based date extraction with regex pre-filter
+  vectorize_service.py   # Gemini embedding (single + batch)
+  profile_commands.py    # Remember/forget direct profile editing
 
 backend/
   app.py                 # FastAPI app, middleware, lifespan
@@ -174,8 +202,8 @@ backend/
   ingestion.py           # Batched background ingestion (20 msgs/batch)
   routes/
     threads.py           # Thread CRUD + message history
-    chat.py              # /chat + /chat/stream
-    query.py             # /query endpoint
+    chat.py              # /chat + /chat/stream (with profile commands)
+    query.py             # /query endpoint (hybrid search)
     stats.py             # System statistics
     ingest.py            # Manual ingestion trigger
 
@@ -184,13 +212,15 @@ frontend/                # React + Vite chat UI
 
 ## Key Features
 
-- **2 LLM calls per ingestion** — extract + profile update (vs 6+ in previous architecture)
-- **No vector search** — everything included in context, ~0.01s retrieval
+- **1-2 LLM calls per ingestion** — extract + profile update every 5th (vs 6+ in previous architecture)
+- **Two retrieval strategies** — rolling summary for chat, hybrid search for queries
+- **Permanent facts** — never compressed, keyword + vector searchable
 - **Consolidated facts** — dense sentences, not atomic fragments
 - **Two-tier rolling summary** — recursive compression preserves dates and recurring facts
 - **Inline conflict detection** — flags genuine contradictions during profile update
 - **Foresight with auto-expiry** — time-bounded events expire when `valid_until` passes
-- **Source attribution** — only user messages extracted as facts, assistant is context-only
+- **Profile commands** — "remember this" / "forget this" for direct profile editing
+- **Temporal query parsing** — regex pre-filter + LLM date extraction for date-filtered search
 - **Streaming chat** — SSE streaming for real-time response display
 - **Identity guardrails** — Ira never reveals AI nature or technical internals
 
@@ -200,17 +230,22 @@ frontend/                # React + Vite chat UI
 
 Tested on LoCoMo benchmark — long-term conversational memory evaluation with 152-199 QA pairs across single-hop, temporal, multi-hop, and open-domain categories.
 
+### Rolling Summary Retrieval (chat path)
+
 | Sample | Speakers | Avg Score | >= 4 | >= 3 | Retrieval |
 |--------|----------|-----------|------|------|-----------|
-| 0 | Caroline & Melanie | 4.49/5 | 84.9% | 90.1% | 0.01s |
+| 0 | Caroline & Melanie | 4.57/5 | 86.2% | 92.1% | 0.01s |
 | 1 | Jon & Gina | 4.57/5 | 86.4% | 92.6% | 0.01s |
 | 2 | John & Maria | 4.63/5 | 90.1% | 94.0% | 0.02s |
-| **Average** | | **4.56/5** | **87.1%** | **92.2%** | **0.01s** |
+| **Average** | | **4.59/5** | **87.6%** | **92.9%** | **0.01s** |
 
-**vs previous RAG architecture:** 4.47/5, 82.2% >= 4, 0.86s retrieval, 6+ LLM calls/session.
+### Hybrid Search Retrieval (query path)
+
+| Top-K | Avg Score | >= 4 | >= 3 | Retrieval |
+|-------|-----------|------|------|-----------|
+| 5 | 4.25/5 | 75.7% | 85.5% | 3.27s |
+| 10 | 4.28/5 | 77.0% | 85.5% | 1.21s |
+
+Hybrid search scores lower on benchmark because the rolling summary contains all information at this scale (~12k tokens). At production scale with months of conversation, the summary will be heavily compressed (lossy) and hybrid search on permanent facts will fill the gaps.
 
 ---
-
-## Project Demo
-
-[Demo Video](https://www.loom.com/share/dd8f00ca8cb94d158791e0e474e9a0de)

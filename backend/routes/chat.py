@@ -9,6 +9,7 @@ from google import genai
 import db
 from config import GEMINI_MODEL
 from agentic_layer.fetch_mem_service import retrieve, compose_context
+from agentic_layer.profile_commands import handle_command
 from backend.schemas import ChatRequest
 from backend.gemini import gemini_client, call_gemini_with_tools
 from backend.prompt import build_chat_prompt
@@ -27,6 +28,12 @@ def chat(request: ChatRequest):
 
     # 1. Store user message
     db.insert_message(request.thread_id, "user", request.message)
+
+    # 1.5. Check for profile commands (remember/forget)
+    cmd_response = handle_command(request.message)
+    if cmd_response:
+        db.insert_message(request.thread_id, "assistant", cmd_response)
+        return {"response": cmd_response, "thread_id": request.thread_id}
 
     # 2. Get unindexed messages as short-term memory
     query_time = datetime.now(IST)
@@ -69,6 +76,17 @@ async def chat_stream(request: ChatRequest):
 
     # 1. Store user message
     db.insert_message(request.thread_id, "user", request.message)
+
+    # 1.5. Check for profile commands (remember/forget)
+    cmd_response = handle_command(request.message)
+    if cmd_response:
+        db.insert_message(request.thread_id, "assistant", cmd_response)
+
+        async def cmd_generate():
+            yield f"data: {json.dumps({'text': cmd_response})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+
+        return StreamingResponse(cmd_generate(), media_type="text/event-stream")
 
     # 2. Get unindexed messages as short-term memory
     query_time = datetime.now(IST)
