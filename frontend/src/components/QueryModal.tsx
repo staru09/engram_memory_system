@@ -117,15 +117,49 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
 
               {/* Timing */}
               {timing && (
-                <div className="flex items-center gap-3 text-xs text-[#667781]">
-                  <span className="flex items-center gap-1">
-                    <Clock size={12} />
-                    Retrieval: {timing.total_retrieval_s}s
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Zap size={12} />
-                    LLM: {timing.llm_response_s}s
-                  </span>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3 text-xs text-[#667781]">
+                    <span className="flex items-center gap-1">
+                      <Clock size={12} />
+                      Retrieval: {timing.total_retrieval_s}s
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Zap size={12} />
+                      LLM: {timing.llm_response_s}s
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[#667781]">
+                    {timing.temporal_parse_s != null && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-sm bg-purple-400" />
+                        Temporal: {timing.temporal_parse_s}s
+                      </span>
+                    )}
+                    {timing.embed_s != null && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-sm bg-blue-400" />
+                        Embed: {timing.embed_s}s
+                      </span>
+                    )}
+                    {timing.hybrid_search_s != null && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-sm bg-green-400" />
+                        Search: {timing.hybrid_search_s}s
+                      </span>
+                    )}
+                    {timing.profile_s != null && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-sm bg-yellow-400" />
+                        Profile: {timing.profile_s}s
+                      </span>
+                    )}
+                    {timing.foresight_s != null && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-sm bg-orange-400" />
+                        Foresight: {timing.foresight_s}s
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

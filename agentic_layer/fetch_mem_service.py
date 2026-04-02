@@ -78,19 +78,28 @@ def retrieve_for_chat(query: str, query_time=None) -> dict:
 def retrieve_for_query(query: str, query_time=None) -> dict:
     """Query retrieval: hybrid search facts + profile + foresight + temporal parse."""
     t0 = time.time()
+    timings = {}
 
     # Step 1: Temporal parse + embed query (parallel)
     from concurrent.futures import ThreadPoolExecutor
     reference_date = str(query_time) if query_time else None
 
+    def _timed_temporal():
+        t = time.time()
+        result = parse_temporal_query(query, reference_date)
+        return result, round(time.time() - t, 3)
+
+    def _timed_embed():
+        t = time.time()
+        result = embed_text(query)
+        return result, round(time.time() - t, 3)
+
     with ThreadPoolExecutor(max_workers=2) as executor:
-        temporal_future = executor.submit(parse_temporal_query, query, reference_date)
-        embed_future = executor.submit(embed_text, query)
+        temporal_future = executor.submit(_timed_temporal)
+        embed_future = executor.submit(_timed_embed)
 
-        temporal_result = temporal_future.result()
-        query_embedding = embed_future.result()
-
-    embed_time = time.time() - t0
+        temporal_result, timings["temporal_parse_s"] = temporal_future.result()
+        query_embedding, timings["embed_s"] = embed_future.result()
 
     # Step 2: Build date filter from temporal parse
     date_filter = None
@@ -101,24 +110,40 @@ def retrieve_for_query(query: str, query_time=None) -> dict:
         }
         print(f"  [query-retrieval] Temporal: {date_filter['date_from']} to {date_filter['date_to']}")
 
-    # Step 3: Hybrid search
-    t1 = time.time()
-    facts = hybrid_search_facts(query, top_k=RETRIEVAL_TOP_K,
-                                date_filter=date_filter, query_embedding=query_embedding)
-    search_time = time.time() - t1
+    # Step 3: Hybrid search + profile + foresight (all parallel)
+    def _timed_search():
+        t = time.time()
+        result = hybrid_search_facts(query, RETRIEVAL_TOP_K, date_filter, query_embedding)
+        return result, round(time.time() - t, 3)
 
-    # Step 4: Profile + foresight (parallel with search — already done by this point)
-    profile = db.get_user_profile()
-    foresight = db.get_active_foresight(query_time) if query_time else []
+    def _timed_profile():
+        t = time.time()
+        result = db.get_user_profile()
+        return result, round(time.time() - t, 3)
 
-    total_time = time.time() - t0
-    print(f"  [query-retrieval] {len(facts)} facts | embed: {embed_time:.2f}s | search: {search_time:.2f}s | total: {total_time:.2f}s")
+    def _timed_foresight():
+        t = time.time()
+        result = db.get_active_foresight(query_time) if query_time else []
+        return result, round(time.time() - t, 3)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        facts_future = executor.submit(_timed_search)
+        profile_future = executor.submit(_timed_profile)
+        foresight_future = executor.submit(_timed_foresight)
+
+        facts, timings["hybrid_search_s"] = facts_future.result()
+        profile, timings["profile_s"] = profile_future.result()
+        foresight, timings["foresight_s"] = foresight_future.result()
+
+    timings["total_retrieval_s"] = round(time.time() - t0, 3)
+    print(f"  [query-retrieval] {len(facts)} facts | temporal: {timings['temporal_parse_s']}s | embed: {timings['embed_s']}s | search: {timings['hybrid_search_s']}s | profile: {timings['profile_s']}s | foresight: {timings['foresight_s']}s | total: {timings['total_retrieval_s']}s")
 
     return {
         "profile": profile,
         "foresight": foresight,
         "summary": {},
         "facts": facts,
+        "timings": timings,
     }
 
 

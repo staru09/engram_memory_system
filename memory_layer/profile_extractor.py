@@ -134,8 +134,11 @@ def maybe_compress_profile():
         print(f"  [profile] Compression failed: {e}")
 
 
-def append_to_rolling_summary(facts: list[dict], current_date: str):
-    """Append new date-tagged entries to the Recent section of rolling summary."""
+def append_to_rolling_summary(facts: list[dict], current_date: str, conversation_time: str = None):
+    """Append new date-tagged entries to the Recent section of rolling summary.
+
+    conversation_time: optional IST time string like '3:34 PM' to include with date.
+    """
     if not facts:
         return
 
@@ -143,7 +146,11 @@ def append_to_rolling_summary(facts: list[dict], current_date: str):
     new_entries = []
     for f in facts:
         date = f.get("date", current_date)
-        new_entries.append(f"[{date}] {f['text']}")
+        if conversation_time:
+            date_tag = f"{date} {conversation_time} IST"
+        else:
+            date_tag = date
+        new_entries.append(f"[{date_tag}] {f['text']}")
     new_text = "\n".join(new_entries)
 
     # Get current summary
@@ -151,9 +158,9 @@ def append_to_rolling_summary(facts: list[dict], current_date: str):
     archive = summary["archive_text"]
     recent = summary["recent_text"]
 
-    # Append to recent
+    # Prepend to recent (newest first — LLM pays more attention to early tokens)
     if recent:
-        recent = recent + "\n" + new_text
+        recent = new_text + "\n" + recent
     else:
         recent = new_text
 
@@ -189,9 +196,10 @@ def maybe_compress_summary():
     if len(recent_lines) <= 2:
         return
 
+    # Oldest entries are at the bottom (newest-first order), evict bottom 40%
     split_point = max(1, len(recent_lines) * 2 // 5)
-    entries_to_compress = "\n".join(recent_lines[:split_point])
-    remaining_recent = "\n".join(recent_lines[split_point:])
+    remaining_recent = "\n".join(recent_lines[:len(recent_lines) - split_point])
+    entries_to_compress = "\n".join(recent_lines[len(recent_lines) - split_point:])
 
     print(f"  [summary] Compressing ({token_count} tokens, threshold {threshold})...")
     print(f"  [summary] Moving {split_point}/{len(recent_lines)} entries to archive")

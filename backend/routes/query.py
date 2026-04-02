@@ -55,9 +55,10 @@ def query_memory(request: QueryRequest):
     print(f"  [query] LLM: {llm_time:.1f}s")
 
     # 6. Log to query_logs table
+    retrieval_timings = raw_result.get("timings", {})
     metadata = {
         "timing": {
-            "total_retrieval_s": round(retrieval_time, 3),
+            **retrieval_timings,
             "llm_response_s": round(llm_time, 3),
         },
     }

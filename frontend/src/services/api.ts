@@ -113,6 +113,11 @@ export const api = {
 
 export interface QueryMetadata {
   timing: {
+    temporal_parse_s?: number;
+    embed_s?: number;
+    hybrid_search_s?: number;
+    profile_s?: number;
+    foresight_s?: number;
     total_retrieval_s: number;
     llm_response_s: number;
   };

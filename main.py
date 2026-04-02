@@ -17,11 +17,30 @@ PROFILE_UPDATE_INTERVAL = 5  # update profile every Nth ingestion
 
 def ingest_conversation(conversation: list[dict], source_id: str = "default",
                         current_date: str = None, interactive: bool = False,
-                        extract_all_speakers: bool = False):
+                        extract_all_speakers: bool = False,
+                        force_profile_update: bool = False):
     """Ingestion pipeline: extract → facts (PG + Qdrant) + summary + foresight + profile (every 5th)."""
+    IST = timezone(timedelta(hours=5, minutes=30))
     if current_date is None:
-        IST = timezone(timedelta(hours=5, minutes=30))
         current_date = datetime.now(IST).strftime("%Y-%m-%d")
+
+    # Extract conversation time from first message's created_at
+    conversation_time = None
+    first_msg = conversation[0] if conversation else None
+    if first_msg and first_msg.get("created_at"):
+        ts = first_msg["created_at"]
+        if hasattr(ts, 'astimezone'):
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            conversation_time = ts.astimezone(IST).strftime("%I:%M %p").lstrip("0")
+        elif isinstance(ts, str):
+            try:
+                dt = datetime.fromisoformat(ts)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                conversation_time = dt.astimezone(IST).strftime("%-I:%M %p")
+            except ValueError:
+                pass
 
     pipeline_start = time.time()
 
@@ -53,7 +72,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     # Get ingestion count
     ingestion_count = db.get_and_increment_ingestion_count()
-    should_update_profile = (ingestion_count % PROFILE_UPDATE_INTERVAL == 0) or (ingestion_count == 19)
+    should_update_profile = True  # update profile every ingestion
 
     # Steps 2a + 2b + 2c + 3 (+ 4 if 5th ingestion) in parallel
     tasks = "facts (PG + Qdrant) + summary + foresight"
@@ -65,7 +84,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     def _run_facts_pg():
         """Store facts in PostgreSQL."""
         t = time.time()
-        fact_ids = db.insert_facts_batch(facts, source_id=source_id)
+        fact_ids = db.insert_facts_batch(facts, source_id=source_id, ingestion_number=ingestion_count)
         return time.time() - t, fact_ids
 
     def _run_facts_qdrant(fact_ids):
@@ -105,7 +124,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
 
     def _run_summary_append():
         t = time.time()
-        append_to_rolling_summary(facts, current_date)
+        append_to_rolling_summary(facts, current_date, conversation_time)
         return time.time() - t
 
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -150,7 +169,6 @@ def reset_databases():
         DROP TABLE IF EXISTS query_logs CASCADE;
         DROP TABLE IF EXISTS conflict_log CASCADE;
         DROP TABLE IF EXISTS conversation_summaries CASCADE;
-        DROP TABLE IF EXISTS ingestion_counter CASCADE;
         DROP TABLE IF EXISTS facts CASCADE;
         DROP TABLE IF EXISTS foresight CASCADE;
         DROP TABLE IF EXISTS user_profile CASCADE;

@@ -41,8 +41,10 @@ def run_background_ingestion(thread_id: str, messages: list[dict]):
             current_date = last_ts.astimezone(IST).strftime("%Y-%m-%d")
             source_id = f"thread_{thread_id}_{current_date}_batch{batch_num}"
 
+            is_last_batch = (batch_num == num_batches)
             print(f"\n[Background] === Batch {batch_num}/{num_batches} ({len(batch)} messages, date: {current_date}) ===")
-            ingest_conversation(conversation, source_id=source_id, current_date=current_date)
+            ingest_conversation(conversation, source_id=source_id, current_date=current_date,
+                                force_profile_update=is_last_batch)
 
             # Mark this batch's messages as ingested
             batch_ids = [msg["id"] for msg in batch]
