@@ -115,7 +115,7 @@ def _get_last_session_date(sample: dict) -> datetime:
 
 def _process_single_qa(qa: dict, index: int, total: int,
                        client, model, query_time=None) -> dict:
-    from agentic_layer.fetch_mem_service import retrieve, compose_context
+    from agentic_layer.fetch_mem_service import retrieve_for_chat, compose_chat_context
 
     question = qa["question"]
     ground_truth = qa.get("answer", qa.get("adversarial_answer", ""))
@@ -127,8 +127,8 @@ def _process_single_qa(qa: dict, index: int, total: int,
     if query_time is None:
         query_time = datetime.now(IST).replace(tzinfo=None)
     try:
-        result = retrieve(question, query_time)
-        context = compose_context(result)
+        result = retrieve_for_chat(question, query_time)
+        context = compose_chat_context(result)
     except Exception as e:
         print(f"  [{index+1}/{total}] ({cat_name}) RETRIEVAL ERROR: {e}")
         return {

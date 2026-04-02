@@ -61,6 +61,20 @@ def init_schema():
             created_at      TIMESTAMP DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS facts (
+            id              SERIAL PRIMARY KEY,
+            fact_text       TEXT NOT NULL,
+            fact_tsv        TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', fact_text)) STORED,
+            category        VARCHAR(100),
+            conversation_date DATE,
+            source_id       VARCHAR(100),
+            created_at      TIMESTAMP DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_facts_tsv ON facts USING GIN (fact_tsv);
+        CREATE INDEX IF NOT EXISTS idx_facts_date ON facts (conversation_date);
+        CREATE INDEX IF NOT EXISTS idx_facts_category ON facts (category);
+
         CREATE TABLE IF NOT EXISTS conversation_summaries (
             id              SERIAL PRIMARY KEY,
             archive_text    TEXT NOT NULL DEFAULT '',
@@ -116,6 +130,90 @@ def init_schema():
     conn.commit()
     cur.close()
     release_connection(conn)
+
+
+# ── Facts CRUD ──
+
+def insert_fact(fact_text: str, category: str, conversation_date: str, source_id: str = None) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO facts (fact_text, category, conversation_date, source_id) VALUES (%s, %s, %s, %s) RETURNING id",
+        (fact_text, category, conversation_date, source_id)
+    )
+    fact_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return fact_id
+
+
+def insert_facts_batch(facts: list[dict], source_id: str = None) -> list[int]:
+    """Batch insert facts. Each dict: {text, category, date}."""
+    if not facts:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    ids = []
+    for f in facts:
+        cur.execute(
+            "INSERT INTO facts (fact_text, category, conversation_date, source_id) VALUES (%s, %s, %s, %s) RETURNING id",
+            (f["text"], f.get("category", "general"), f.get("date"), source_id)
+        )
+        ids.append(cur.fetchone()[0])
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return ids
+
+
+def get_all_facts() -> list[dict]:
+    """Return all facts for Qdrant rebuild."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, fact_text, category, conversation_date FROM facts ORDER BY id")
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
+def _to_or_query(query: str) -> str:
+    """Convert query to OR-separated words for websearch_to_tsquery."""
+    words = query.strip().split()
+    return " OR ".join(words) if words else query
+
+
+def keyword_search_facts(query: str, top_k: int = 5, date_filter: dict = None) -> list[dict]:
+    """Full-text search on facts using websearch_to_tsquery with OR logic."""
+    or_query = _to_or_query(query)
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    if date_filter:
+        cur.execute("""
+            SELECT id, fact_text, category, conversation_date,
+                   ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
+            FROM facts
+            WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
+              AND conversation_date BETWEEN %s AND %s
+            ORDER BY rank DESC
+            LIMIT %s
+        """, (or_query, or_query, date_filter["date_from"], date_filter["date_to"], top_k))
+    else:
+        cur.execute("""
+            SELECT id, fact_text, category, conversation_date,
+                   ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
+            FROM facts
+            WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
+            ORDER BY rank DESC
+            LIMIT %s
+        """, (or_query, or_query, top_k))
+
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
 
 
 # ── User Profile ──

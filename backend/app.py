@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import db
+import vector_store
 from backend.ingestion import periodic_ingestion_check
 from backend.routes import threads, chat, stats, ingest, query
 
@@ -12,6 +13,7 @@ from backend.routes import threads, chat, stats, ingest, query
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_schema()
+    vector_store.init_collections()
     threading.Thread(target=periodic_ingestion_check, daemon=True).start()
     yield
     db.close_pool()

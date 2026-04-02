@@ -5,7 +5,7 @@ from fastapi import APIRouter
 
 import db
 from models import QueryLog
-from agentic_layer.fetch_mem_service import retrieve, compose_context
+from agentic_layer.fetch_mem_service import retrieve_for_query, compose_query_context
 from backend.schemas import QueryRequest
 from backend.gemini import call_gemini_with_tools
 from backend.prompt import build_query_prompt
@@ -35,8 +35,8 @@ def query_memory(request: QueryRequest):
 
     # 3. Retrieve
     retrieval_start = time.time()
-    raw_result = retrieve(request.query, query_time=query_time.replace(tzinfo=None))
-    context = compose_context(raw_result)
+    raw_result = retrieve_for_query(request.query, query_time=query_time.replace(tzinfo=None))
+    context = compose_query_context(raw_result)
     retrieval_time = time.time() - retrieval_start
     print(f"  [query] Retrieval: {retrieval_time:.2f}s")
 
