@@ -249,3 +249,61 @@ Tested on LoCoMo benchmark — long-term conversational memory evaluation with 1
 Hybrid search scores lower on benchmark because the rolling summary contains all information at this scale (~12k tokens). At production scale with months of conversation, the summary will be heavily compressed (lossy) and hybrid search on permanent facts will fill the gaps.
 
 ---
+
+## Getting Started
+
+### Prerequisites
+- Python 3.11+
+- PostgreSQL
+- Qdrant (local or cloud)
+- Gemini API key
+
+### 1. Environment Setup
+
+```bash
+cp .env.example .env
+# Edit .env with your credentials:
+#   GEMINI_API_KEY, PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DB
+#   QDRANT_HOST, QDRANT_PORT (or QDRANT_URL + QDRANT_API_KEY for cloud)
+```
+
+### 2. Backend
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Start the FastAPI server
+uvicorn backend.app:app --reload --port 8000
+```
+
+The backend runs on `http://localhost:8000`. On first start it auto-creates all PostgreSQL tables and the Qdrant collection.
+
+### 3. Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend runs on `http://localhost:3000` and connects to the backend at `http://localhost:8000` by default. To change this, set `VITE_API_BASE_URL` in `frontend/.env`.
+
+### 4. Run LoCoMo Benchmark (optional)
+
+```bash
+# Full run: reset DB + ingest + evaluate
+python run_locomo.py --reset --sample 0
+
+# Skip ingestion (re-evaluate only)
+python run_locomo.py --skip-ingest --sample 0
+
+# Rebuild Qdrant from existing facts (no re-ingestion needed)
+python -c "import vector_store; vector_store.rebuild_from_db()"
+```
+
+---
+
+## Project Demo
+
+[Demo Video](https://www.loom.com/share/dd8f00ca8cb94d158791e0e474e9a0de)
