@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Non-secret env vars (secrets set via Cloud Run env vars)
-ENV GEMINI_MODEL=gemini-3-flash-preview
+ENV GEMINI_MODEL=gemini-2.5-flash
 ENV GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 ENV PG_PORT=5432
 ENV PG_USER=postgres
