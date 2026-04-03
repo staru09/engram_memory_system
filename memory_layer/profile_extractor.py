@@ -1,15 +1,13 @@
 import json
 import os
 from google import genai
-from google.genai import types
-from config import GEMINI_API_KEY, GEMINI_MODEL, PROFILE_TOKEN_BUDGET, SUMMARY_TOKEN_BUDGET, COMPRESSION_THRESHOLD
+from config import GEMINI_API_KEY, GEMINI_MODEL, PROFILE_TOKEN_BUDGET, COMPRESSION_THRESHOLD
 from models import ConflictLog
 import db
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 _PROFILE_UPDATE_PATH = os.path.join(os.path.dirname(__file__), "prompts", "profile_update.txt")
-_SUMMARY_COMPRESS_PATH = os.path.join(os.path.dirname(__file__), "prompts", "summary_compression.txt")
 _PROFILE_COMPRESS_PATH = os.path.join(os.path.dirname(__file__), "prompts", "profile_compression.txt")
 
 
@@ -33,8 +31,113 @@ def _count_tokens(text: str) -> int:
         return fallback
 
 
+def _number_profile_lines(profile: str) -> str:
+    """Add line numbers to profile for LLM reference.
+
+    Returns numbered profile text like:
+      [1] - Rampal is 24 years old
+      [2] - Rampal works as an MLE
+      ...
+      [15] ## IMPLICIT TRAITS
+      [16] - [Health-Conscious] — goes to gym 6 days a week
+    """
+    lines = profile.split("\n")
+    numbered = []
+    for i, line in enumerate(lines, 1):
+        numbered.append(f"[{i}] {line}")
+    return "\n".join(numbered)
+
+
+def _apply_operations(profile: str, operations: list[dict]) -> str:
+    """Apply add/update/delete operations to profile text programmatically."""
+    lines = profile.split("\n")
+
+    # Collect deletes and updates by line number
+    deletes = set()
+    updates = {}
+    adds_explicit = []
+    adds_implicit = []
+
+    for op in operations:
+        action = op.get("action", "none")
+        if action == "none":
+            continue
+        elif action == "delete":
+            line_num = op.get("line")
+            if line_num and 1 <= line_num <= len(lines):
+                deletes.add(line_num)
+                print(f"    [op] DELETE line {line_num}: {lines[line_num - 1].strip()}")
+        elif action == "update":
+            line_num = op.get("line")
+            new_fact = op.get("new_fact", "")
+            if line_num and 1 <= line_num <= len(lines) and new_fact:
+                updates[line_num] = new_fact
+                print(f"    [op] UPDATE line {line_num}: {lines[line_num - 1].strip()} → {new_fact.strip()}")
+        elif action == "add":
+            fact = op.get("fact", "")
+            section = op.get("section", "explicit")
+            if fact:
+                if section == "implicit":
+                    adds_implicit.append(fact)
+                else:
+                    adds_explicit.append(fact)
+                print(f"    [op] ADD ({section}): {fact.strip()}")
+
+    # Apply updates and deletes
+    new_lines = []
+    for i, line in enumerate(lines, 1):
+        if i in deletes:
+            continue
+        elif i in updates:
+            new_lines.append(updates[i])
+        else:
+            new_lines.append(line)
+
+    # Find the implicit traits header to know where to insert
+    implicit_idx = None
+    for i, line in enumerate(new_lines):
+        if "## IMPLICIT TRAITS" in line:
+            implicit_idx = i
+            break
+
+    # Add new explicit facts (before ## IMPLICIT TRAITS, or at the end)
+    if adds_explicit:
+        if implicit_idx is not None:
+            # Insert before the blank line preceding ## IMPLICIT TRAITS
+            insert_at = implicit_idx
+            # Skip back over blank lines
+            while insert_at > 0 and new_lines[insert_at - 1].strip() == "":
+                insert_at -= 1
+            for fact in reversed(adds_explicit):
+                new_lines.insert(insert_at, fact)
+            # Recalculate implicit_idx after insertion
+            implicit_idx = None
+            for i, line in enumerate(new_lines):
+                if "## IMPLICIT TRAITS" in line:
+                    implicit_idx = i
+                    break
+        else:
+            # No implicit section yet — append at end
+            for fact in adds_explicit:
+                new_lines.append(fact)
+
+    # Add new implicit traits (at the end)
+    if adds_implicit:
+        if implicit_idx is None:
+            # Create the section
+            new_lines.append("")
+            new_lines.append("## IMPLICIT TRAITS")
+        for fact in adds_implicit:
+            new_lines.append(fact)
+
+    return "\n".join(new_lines)
+
+
 def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
-    """Update profile with new facts and detect conflicts.
+    """Update profile with new facts using add/update/delete operations.
+
+    The LLM outputs structured operations instead of rewriting the full profile.
+    Operations are applied programmatically for predictability.
 
     Args:
         new_facts: list of {"text": ..., "category": ..., "date": ...}
@@ -46,8 +149,13 @@ def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
         return db.get_user_profile(), []
 
     existing_profile = db.get_user_profile()
-    if not existing_profile:
-        existing_profile = "(No profile yet — this is the first update.)"
+    is_first_update = not existing_profile
+
+    # For the LLM prompt, show a placeholder so it knows to only add
+    prompt_profile = existing_profile if existing_profile else "(Empty — first update. Use only 'add' operations.)"
+
+    # Number lines so LLM can reference them
+    numbered_profile = _number_profile_lines(prompt_profile)
 
     # Format new facts grouped by category
     facts_text = "\n".join(
@@ -56,7 +164,7 @@ def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
     )
 
     prompt = _load_prompt(_PROFILE_UPDATE_PATH)
-    prompt = prompt.replace("{existing_profile}", existing_profile)
+    prompt = prompt.replace("{existing_profile}", numbered_profile)
     prompt = prompt.replace("{new_facts}", facts_text)
 
     for attempt in range(3):
@@ -75,8 +183,17 @@ def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
                     text = text[:-3]
 
             parsed = json.loads(text)
-            updated_profile = parsed.get("updated_profile", existing_profile)
+            operations = parsed.get("operations", [])
             conflicts = parsed.get("conflicts", [])
+
+            # Check if no-op
+            if len(operations) == 1 and operations[0].get("action") == "none":
+                print(f"  [profile] No changes needed")
+                return existing_profile, []
+
+            # Apply operations programmatically (use empty base on first update)
+            base_profile = "" if is_first_update else existing_profile
+            updated_profile = _apply_operations(base_profile, operations)
 
             # Store profile
             db.upsert_user_profile(updated_profile)
@@ -89,7 +206,12 @@ def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
                     new_value=c.get("new_value", ""),
                 ))
 
-            print(f"  [profile] Updated ({len(updated_profile)} chars, {len(conflicts)} conflicts)")
+            op_summary = ", ".join(
+                f"{sum(1 for o in operations if o.get('action') == a)} {a}"
+                for a in ["add", "update", "delete"]
+                if any(o.get("action") == a for o in operations)
+            )
+            print(f"  [profile] Updated ({op_summary}, {len(conflicts)} conflicts, {len(updated_profile)} chars)")
             return updated_profile, conflicts
 
         except json.JSONDecodeError as e:
@@ -134,106 +256,3 @@ def maybe_compress_profile():
         print(f"  [profile] Compression failed: {e}")
 
 
-def append_to_rolling_summary(facts: list[dict], current_date: str, conversation_time: str = None):
-    """Append new date-tagged entries to the Recent section of rolling summary.
-
-    conversation_time: optional IST time string like '3:34 PM' to include with date.
-    """
-    if not facts:
-        return
-
-    # Format facts as date-tagged entries
-    new_entries = []
-    for f in facts:
-        date = f.get("date", current_date)
-        if conversation_time:
-            date_tag = f"{date} {conversation_time} IST"
-        else:
-            date_tag = date
-        new_entries.append(f"[{date_tag}] {f['text']}")
-    new_text = "\n".join(new_entries)
-
-    # Get current summary
-    summary = db.get_conversation_summary()
-    archive = summary["archive_text"]
-    recent = summary["recent_text"]
-
-    # Prepend to recent (newest first — LLM pays more attention to early tokens)
-    if recent:
-        recent = new_text + "\n" + recent
-    else:
-        recent = new_text
-
-    # Count tokens
-    total_text = archive + "\n" + recent if archive else recent
-    token_count = _count_tokens(total_text)
-
-    db.upsert_conversation_summary(archive, recent, token_count)
-    print(f"  [summary] Appended {len(new_entries)} entries to Recent ({token_count} tokens)")
-
-
-ARCHIVE_MAX_RATIO = 0.20  # archive should be ≤20% of total budget
-
-
-def maybe_compress_summary():
-    """Compress rolling summary if it exceeds 80% of token budget.
-    Also cap archive at 20% of budget — re-compress if needed."""
-    summary = db.get_conversation_summary()
-    token_count = summary["token_count"]
-    threshold = int(SUMMARY_TOKEN_BUDGET * COMPRESSION_THRESHOLD)
-
-    if token_count < threshold:
-        return
-
-    archive = summary["archive_text"]
-    recent = summary["recent_text"]
-
-    if not recent:
-        return
-
-    # Split recent into lines, take oldest ~40% for compression
-    recent_lines = recent.strip().split("\n")
-    if len(recent_lines) <= 2:
-        return
-
-    # Oldest entries are at the bottom (newest-first order), evict bottom 40%
-    split_point = max(1, len(recent_lines) * 2 // 5)
-    remaining_recent = "\n".join(recent_lines[:len(recent_lines) - split_point])
-    entries_to_compress = "\n".join(recent_lines[len(recent_lines) - split_point:])
-
-    print(f"  [summary] Compressing ({token_count} tokens, threshold {threshold})...")
-    print(f"  [summary] Moving {split_point}/{len(recent_lines)} entries to archive")
-
-    prompt = _load_prompt(_SUMMARY_COMPRESS_PATH)
-    prompt = prompt.replace("{existing_archive}", archive if archive else "(Empty — first compression)")
-    prompt = prompt.replace("{entries_to_compress}", entries_to_compress)
-
-    try:
-        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        if response.text:
-            new_archive = response.text.strip()
-
-            # Check if archive exceeds 20% cap
-            archive_max_tokens = int(SUMMARY_TOKEN_BUDGET * ARCHIVE_MAX_RATIO)
-            archive_tokens = _count_tokens(new_archive)
-
-            if archive_tokens > archive_max_tokens:
-                print(f"  [summary] Archive too large ({archive_tokens} tokens, cap {archive_max_tokens}), re-compressing...")
-                recompress_prompt = _load_prompt(_SUMMARY_COMPRESS_PATH)
-                recompress_prompt = recompress_prompt.replace("{existing_archive}", "(Condense this into a shorter summary)")
-                recompress_prompt = recompress_prompt.replace("{entries_to_compress}", new_archive)
-                try:
-                    recompress_response = client.models.generate_content(model=GEMINI_MODEL, contents=recompress_prompt)
-                    if recompress_response.text:
-                        new_archive = recompress_response.text.strip()
-                        archive_tokens = _count_tokens(new_archive)
-                        print(f"  [summary] Archive re-compressed to {archive_tokens} tokens")
-                except Exception as e:
-                    print(f"  [summary] Archive re-compression failed: {e}")
-
-            total_text = new_archive + "\n" + remaining_recent
-            new_token_count = _count_tokens(total_text)
-            db.upsert_conversation_summary(new_archive, remaining_recent, new_token_count)
-            print(f"  [summary] Compressed: {token_count} → {new_token_count} tokens (archive: {archive_tokens}, recent: {new_token_count - archive_tokens})")
-    except Exception as e:
-        print(f"  [summary] Compression failed: {e}")
