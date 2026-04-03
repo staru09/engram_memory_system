@@ -88,28 +88,44 @@ async def chat_stream(request: ChatRequest):
 
         return StreamingResponse(cmd_generate(), media_type="text/event-stream")
 
-    # 2. Get unindexed messages as short-term memory
+    pipeline_start = _time.time()
     query_time = datetime.now(IST)
-    recent_messages = db.get_unprocessed_messages(request.thread_id)
 
-    # 3. Retrieve memory context (always fast — profile + category summaries)
-    memory_context = ""
-    try:
+    # 2 + 3. Fetch recent messages + memory context in parallel
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_recent():
+        return db.get_unprocessed_messages(request.thread_id)
+
+    def _fetch_memory():
         result = retrieve(request.message, query_time=query_time.replace(tzinfo=None))
-        memory_context = compose_context(result)
-    except Exception as e:
-        print(f"[Chat Stream] Memory retrieval failed: {e}")
+        return compose_context(result)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        recent_future = executor.submit(_fetch_recent)
+        memory_future = executor.submit(_fetch_memory)
+
+        recent_messages = recent_future.result()
+        db_time = _time.time() - pipeline_start
+
+        memory_context = ""
+        try:
+            memory_context = memory_future.result()
+        except Exception as e:
+            print(f"[Chat Stream] Memory retrieval failed: {e}")
+    retrieval_time = _time.time() - pipeline_start
 
     # 4. Build prompt
+    prompt_start = _time.time()
     prompt = build_chat_prompt(
         memory_context=memory_context,
         recent_messages=recent_messages,
         query_time=query_time,
     )
+    prompt_time = _time.time() - prompt_start
 
     # 5. Stream from Gemini
     async def generate():
-        import time as _time
         llm_start = _time.time()
         response = gemini_client.models.generate_content_stream(
             model=GEMINI_MODEL, contents=prompt
@@ -126,11 +142,21 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps({'text': text})}\n\n"
 
         llm_total = _time.time() - llm_start
-        print(f"  [chat-stream] LLM: {llm_total:.1f}s (first token: {first_token_time:.1f}s)")
+        total_time = _time.time() - pipeline_start
+
+        timings = {
+            "db_ms": round(db_time * 1000),
+            "retrieval_ms": round(retrieval_time * 1000),
+            "prompt_ms": round(prompt_time * 1000),
+            "first_token_ms": round((first_token_time or 0) * 1000),
+            "llm_ms": round(llm_total * 1000),
+            "total_ms": round(total_time * 1000),
+        }
+        print(f"  [chat-stream] DB: {db_time*1000:.0f}ms | Retrieval: {retrieval_time*1000:.0f}ms | Prompt: {prompt_time*1000:.0f}ms | First token: {(first_token_time or 0)*1000:.0f}ms | LLM: {llm_total*1000:.0f}ms | Total: {total_time*1000:.0f}ms")
 
         answer = "".join(full_response)
         db.insert_message(request.thread_id, "assistant", answer)
         check_ingestion_trigger(request.thread_id)
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'timings': timings})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

@@ -36,24 +36,6 @@ def init_collections():
         print(f"[qdrant] Created collection '{COLLECTION_NAME}' ({EMBEDDING_DIM}-dim)")
 
 
-def upsert_fact(fact_id: int, embedding: list[float], fact_text: str,
-                conversation_date: str, category: str):
-    client = _get_client()
-    client.upsert(
-        collection_name=COLLECTION_NAME,
-        points=[models.PointStruct(
-            id=fact_id,
-            vector=embedding,
-            payload={
-                "fact_text": fact_text,
-                "conversation_date": conversation_date or "",
-                "date_int": _date_to_int(conversation_date),
-                "category": category or "",
-                "fact_id": fact_id,
-            },
-        )],
-    )
-
 
 def upsert_facts_batch(facts: list[dict]):
     """Batch upsert. Each dict: {fact_id, embedding, fact_text, conversation_date, category}."""

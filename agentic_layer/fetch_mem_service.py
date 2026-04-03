@@ -62,10 +62,35 @@ def hybrid_search_facts(query: str, top_k: int = RETRIEVAL_TOP_K,
 
 
 def retrieve_for_chat(query: str, query_time=None) -> dict:
-    """Chat retrieval: rolling summary + profile + foresight. No search."""
-    profile = db.get_user_profile()
-    foresight = db.get_active_foresight(query_time) if query_time else []
-    summary = db.get_conversation_summary()
+    """Chat retrieval: rolling summary + profile + foresight. No search, parallel DB reads."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _profile():
+        t = time.time()
+        r = db.get_user_profile()
+        print(f"    [chat-retrieve] profile: {(time.time()-t)*1000:.0f}ms")
+        return r
+
+    def _foresight():
+        t = time.time()
+        r = db.get_active_foresight(query_time) if query_time else []
+        print(f"    [chat-retrieve] foresight: {(time.time()-t)*1000:.0f}ms")
+        return r
+
+    def _summary():
+        t = time.time()
+        r = db.get_conversation_summary()
+        print(f"    [chat-retrieve] summary: {(time.time()-t)*1000:.0f}ms")
+        return r
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        profile_f = executor.submit(_profile)
+        foresight_f = executor.submit(_foresight)
+        summary_f = executor.submit(_summary)
+
+        profile = profile_f.result()
+        foresight = foresight_f.result()
+        summary = summary_f.result()
 
     return {
         "profile": profile,
