@@ -5,22 +5,35 @@ You are a memory extraction specialist. Given a conversation, extract all import
 EXTRACTION RULES:
 - Extract EVERY piece of meaningful information — names, places, dates, preferences, plans, opinions, relationships, activities.
 - Each fact should be a dense, self-contained sentence that captures the full context of an event or detail.
-  BAD: "Person signed up for a class" + "Class is at community center" + "Class starts next week" (3 separate facts)
-  GOOD: "Person signed up for a class at the community center starting next week." (1 consolidated fact)
+- AGGRESSIVELY CONSOLIDATE related facts into single rich sentences. If multiple pieces of information are about the same event, person, or topic, merge them into ONE fact.
+  BAD (4 separate facts):
+    "User ordered pasta from a delivery app"
+    "The order was placed at 1 PM"
+    "The delivery arrived cold after an hour"
+    "User liked the taste but was disappointed it arrived cold"
+  GOOD (1 consolidated fact):
+    "Amit ordered pasta via Zomato at 1 PM on June 12, 2025, which arrived cold after an hour (despite a 30-min estimate); Amit enjoyed the taste but was disappointed by the cold delivery."
+  BAD (3 separate facts):
+    "User signed up for a class"
+    "The class is at the community center"
+    "The class starts on Monday"
+  GOOD (1 consolidated fact):
+    "Priya signed up for a pottery class at the community center starting Monday, June 16, 2025."
+- Aim for FEWER but RICHER facts. Each fact should pack as much related context as possible into one sentence. Target roughly 1 fact per distinct topic/event discussed, not 1 fact per detail.
 - Include ALL specific names, dates, quantities, and details.
-- Convert relative dates to absolute: "4 years ago" from 2023 = "in 2019".
-- Use dual time format when relative time is mentioned: "3 days ago (March 26, 2026)" — include both relative and absolute.
+- Convert relative dates to absolute: "4 years ago" from 2025 = "in 2021", "yesterday" from June 15 = "on June 14, 2025".
+- ALWAYS use absolute dates in facts, never relative ("4 days ago", "last week", "yesterday"). Relative time goes stale.
 - NEVER infer beyond what is explicitly stated.
 - NEVER infer residence from visiting a place.
 - NEVER escalate frequency — mentioning something once does NOT make it a habit.
 - Extract WHAT HAPPENED, not the user's memory of it. If user says "I don't remember planning X" but they didn't do X, the fact is "User did not do X" — not "User doesn't remember X".
-- Facts should be objective statements, not editorial commentary. BAD: "User does not remember his plan." GOOD: "User did not travel to Vimanagar on March 31."
-- When a prior plan is contradicted by current reality, extract the current state. BAD: "User forgot about the train." GOOD: "User is still at home as of April 2 and did not take the train on March 31."
+- Facts should be objective statements, not editorial commentary. BAD: "User does not remember his plan." GOOD: "Amit did not travel to Pune on June 10."
+- When a prior plan is contradicted by current reality, extract the current state. BAD: "User forgot about the trip." GOOD: "Amit is still in Mumbai as of June 12 and did not take the bus to Pune on June 10."
 - COREFERENCE RESOLUTION: When pronouns like "wo", "they", "it", "that" are used, resolve them to the correct entity using conversation context.
 
 ATTRIBUTION RULES:
-- Every fact MUST contain the person's actual name (e.g., "Rampal ordered..." not "the user ordered...")
-- Resolve ALL pronouns to specific names: "he went" → "Rampal went"
+- Every fact MUST contain the person's actual name (e.g., "Amit ordered..." not "the user ordered...")
+- Resolve ALL pronouns to specific names: "he went" → "Amit went"
 - If the user's name is unknown, use "User" consistently — never "the person", "they", or "someone"
 - Once a name is established in conversation, always use it in all subsequent facts
 
@@ -48,6 +61,13 @@ VERBATIM DETAILS — these are HIGH PRIORITY and must NEVER be skipped:
 - Advice given: extract the specific steps or recommendations, not just "gave advice".
 - What someone saw or experienced at an event: extract what they observed, not just that they attended.
 
+FREQUENCY & PATTERN TRACKING:
+- Record recurring activities and their frequency: "Amit goes to the gym 6 days a week" not just "Amit goes to the gym".
+- Note habitual actions with specifics: "Priya usually has green tea at 8 AM before work" not just "Priya drinks tea".
+- Track time-specific routines: "Amit calls his mother every Sunday evening" not just "Amit talks to his mother".
+- If someone mentions doing something repeatedly ("I always", "every week", "usually"), capture the frequency explicitly.
+- If a pattern emerges across the conversation (e.g., mentions gym on Monday and again on Thursday), consolidate into one frequency fact: "Amit works out on Mondays and Thursdays".
+
 WHAT TO PRIORITIZE:
 - Specific details (objects, descriptions, counts, names, what was seen/heard) over general opinions or beliefs.
 - Actions and events over feelings about those events.
@@ -73,10 +93,22 @@ Extract forward-looking or time-bounded information:
 - Temporary illness: ~1-2 weeks
 - Travel plans: specific dates
 - Deliveries: precise ETA
-- New job/move: indefinite (valid_until = null)
+- New job/move: indefinite (valid_until = null, duration_days = null)
 - Deadlines: valid until the deadline date
 If no foresight signals exist, return an empty array.
-Each foresight MUST include an "evidence" field — the specific user statement that triggered it.
+Each foresight MUST include:
+- "evidence": the specific user statement that triggered this prediction
+- "duration_days": integer number of days this foresight is expected to last (null if indefinite)
+
+Foresight examples:
+- User says "I have a 7 AM flight to Delhi on Friday":
+  {"description": "Flight to Delhi at 7 AM", "valid_from": "2025-06-20", "valid_until": "2025-06-20", "evidence": "User said they have a 7 AM flight to Delhi on Friday", "duration_days": 1}
+- User says "Doctor told me to rest and avoid spicy food for a week":
+  {"description": "User should avoid spicy food and rest per doctor's advice", "valid_from": "2025-06-15", "valid_until": "2025-06-22", "evidence": "Doctor advised rest and avoiding spicy food for one week", "duration_days": 7}
+- User says "I just started a new job at a startup":
+  {"description": "User started working at a startup", "valid_from": "2025-06-15", "valid_until": null, "evidence": "User said they just started a new job at a startup", "duration_days": null}
+- User says "My exams start next Monday and end on the 25th":
+  {"description": "User has exams", "valid_from": "2025-06-16", "valid_until": "2025-06-25", "evidence": "User said exams start next Monday and end on the 25th", "duration_days": 10}
 
 **Conversation:**
 {conversation}
@@ -89,7 +121,7 @@ Output as JSON:
     {"text": "fact text here", "category": "category_name", "date": "YYYY-MM-DD"}
   ],
   "foresight": [
-    {"description": "foresight description here", "valid_from": "YYYY-MM-DD", "valid_until": "YYYY-MM-DD", "evidence": "user's exact statement or paraphrase that triggered this"}
+    {"description": "foresight description here", "valid_from": "YYYY-MM-DD", "valid_until": "YYYY-MM-DD", "evidence": "user's exact statement or paraphrase that triggered this", "duration_days": 7}
   ]
 }
 

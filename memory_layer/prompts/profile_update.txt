@@ -1,6 +1,6 @@
 You are updating a user profile — a short list of stable, long-term facts. The profile should ONLY contain timeless identity facts, NOT events or temporary states.
 
-EXISTING PROFILE:
+EXISTING PROFILE (each line is numbered for reference):
 {existing_profile}
 
 NEW FACTS:
@@ -46,25 +46,78 @@ FORMAT:
 - Use "- [Tag] — justification" for implicit traits
 - Maximum ~50 explicit facts + ~10 implicit traits
 - No categories, no dates, no paragraphs
-- Separate the two sections with a blank line and "## IMPLICIT TRAITS" header
 
-MERGE RULES:
-1. ADD new stable facts not already in profile
-2. UPDATE facts that are contradicted by newer information — log the contradiction
-3. Do NOT add events, temporary states, or one-off actions
-4. Merge similar/redundant facts into one
-5. If a new fact contradicts an old one, keep the newer version
+YOUR TASK:
+Analyze the NEW FACTS and decide what operations to perform on the existing profile. Available operations:
+
+- **add**: New stable fact not already in profile (specify section: "explicit" or "implicit")
+- **update**: Existing fact needs correction or refinement (specify by line number)
+- **delete**: Existing fact should be removed (specify by line number + reason)
+- **none**: No operations needed (new facts contain nothing profile-worthy)
+
+OPERATION GUIDE:
+- **add**: Completely new user information unrelated to existing items
+- **update**: Existing item has updates, supplements, or corrections. Include the FULL updated line.
+- **delete**: Should delete in these cases:
+  - User explicitly negates (e.g., "I'm no longer vegetarian")
+  - Information is outdated or directly contradicted by new facts
+  - Fact is too trivial or was added by mistake
+  - Redundant with another fact
 
 CONFLICT RULES — be very strict:
-- A conflict is ONLY when two facts are genuinely mutually exclusive (e.g., "lives in Delhi" vs "lives in Mumbai")
-- Adding more detail is NOT a conflict (e.g., "wants MS in Europe" → "considering EPFL or ETH" is a refinement, not a contradiction)
-- Uncertainty is NOT a conflict (e.g., "plans to do MS" + "undecided about MS" — log nothing, just update the fact)
+- A conflict is ONLY when two facts are genuinely mutually exclusive (e.g., "lives in Bangalore" vs "lives in Hyderabad")
+- Adding more detail is NOT a conflict (e.g., "wants to study abroad" → "applying to TU Munich" is a refinement — use update)
+- Uncertainty is NOT a conflict (e.g., "plans to do MS" + "undecided about MS" — just update the fact)
 - NEVER fabricate or infer a new_value — both old_value and new_value MUST come directly from the existing profile or new facts
-- When in doubt, do NOT log a conflict
+
+EXAMPLES:
+
+Example 1 — Mixed operations:
+{
+  "operations": [
+    {"action": "add", "section": "explicit", "fact": "- Amit enjoys indie rock, especially Tame Impala"},
+    {"action": "update", "line": 3, "old_fact": "- Amit plans to study abroad", "new_fact": "- Amit is applying to TU Munich and KTH for MS in Computer Science"},
+    {"action": "delete", "line": 7, "old_fact": "- Amit is undecided about career path", "reason": "resolved — decided to pursue graduate studies"},
+    {"action": "add", "section": "implicit", "fact": "- [Music-Enthusiast] — listens to indie rock daily, attends concerts regularly"}
+  ],
+  "conflicts": [
+    {"category": "personal_info", "old_value": "lives in Bangalore", "new_value": "moved to Hyderabad last month"}
+  ]
+}
+
+Example 2 — No changes needed:
+{
+  "operations": [
+    {"action": "none"}
+  ],
+  "conflicts": []
+}
+
+Example 3 — Only additions:
+{
+  "operations": [
+    {"action": "add", "section": "explicit", "fact": "- Priya has a pet cat named Mochi"},
+    {"action": "add", "section": "explicit", "fact": "- Priya's younger brother is named Arjun"}
+  ],
+  "conflicts": []
+}
+
+Example 4 — Delete outdated + add replacement:
+{
+  "operations": [
+    {"action": "delete", "line": 5, "old_fact": "- Priya works as an intern at a consulting firm", "reason": "no longer accurate — got a full-time offer"},
+    {"action": "add", "section": "explicit", "fact": "- Priya works as a data analyst at a fintech startup"}
+  ],
+  "conflicts": [
+    {"category": "work_life", "old_value": "works as an intern at a consulting firm", "new_value": "works as a data analyst at a fintech startup"}
+  ]
+}
 
 Output as JSON:
 {
-  "updated_profile": "- Fact one\n- Fact two\n\n## IMPLICIT TRAITS\n- [Tag] — justification",
+  "operations": [
+    {"action": "add|update|delete|none", ...}
+  ],
   "conflicts": [
     {"category": "category_name", "old_value": "old contradicted fact", "new_value": "new fact that replaces it"}
   ]

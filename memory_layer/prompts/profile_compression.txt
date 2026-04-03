@@ -5,8 +5,8 @@ CURRENT PROFILE:
 
 COMPACTION RULES:
 1. MERGE similar/overlapping facts into single facts:
-   - "Rampal plans MS in US or Europe" + "Rampal is considering EPFL or ETH" → "Rampal is considering EPFL or ETH Zurich for MS in 2027"
-   - "Rampal likes punk rock" + "Rampal listens to MGK" → "Rampal enjoys punk rock, especially MGK"
+   - "Amit plans to study abroad" + "Amit is applying to TU Munich and KTH" → "Amit is applying to TU Munich and KTH for MS in 2027"
+   - "Priya likes indie music" + "Priya listens to Tame Impala" → "Priya enjoys indie music, especially Tame Impala"
 2. REMOVE truly redundant facts (same info stated twice)
 3. KEEP all unique facts intact — do not drop facts just to reduce count
 4. KEEP the two-section format: explicit facts first, then "## IMPLICIT TRAITS" section
