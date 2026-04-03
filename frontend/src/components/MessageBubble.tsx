@@ -36,8 +36,17 @@ export default function MessageBubble({ msg, showTail }: MessageBubbleProps) {
         <div className="relative">
           <span className="whitespace-pre-wrap break-words">
             {msg.text}
-            <span className="inline-block w-[70px]"></span>
+            <span className={`inline-block ${msg.timings ? 'w-[70px]' : 'w-[70px]'}`}></span>
           </span>
+          {!isUser && msg.timings && (
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-1 pt-1 border-t border-[#e9edef] text-[10px] text-[#667781] font-mono">
+              <span>recent:{msg.timings.db_ms}ms</span>
+              <span>memory:{msg.timings.retrieval_ms}ms</span>
+              <span>ttft:{msg.timings.first_token_ms}ms</span>
+              <span>llm:{msg.timings.llm_ms}ms</span>
+              <span className="font-semibold">total:{msg.timings.total_ms}ms</span>
+            </div>
+          )}
           <div className="absolute bottom-[-2px] right-0 flex items-center gap-1">
             <span className="text-[11px] text-[#667781] leading-none">{msg.timestamp}</span>
             {isUser && (

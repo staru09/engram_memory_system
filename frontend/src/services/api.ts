@@ -53,7 +53,7 @@ export const api = {
     message: string,
     threadId: string,
     onToken: (text: string) => void,
-    onDone: () => void,
+    onDone: (timings?: ChatTimings) => void,
     onError: (error: Error) => void,
   ): Promise<void> {
     try {
@@ -83,7 +83,7 @@ export const api = {
           try {
             const parsed = JSON.parse(data);
             if (parsed.done) {
-              onDone();
+              onDone(parsed.timings);
               return;
             }
             if (parsed.text) {
@@ -110,6 +110,15 @@ export const api = {
     return response.json();
   }
 };
+
+export interface ChatTimings {
+  db_ms: number;
+  retrieval_ms: number;
+  prompt_ms: number;
+  first_token_ms: number;
+  llm_ms: number;
+  total_ms: number;
+}
 
 export interface QueryMetadata {
   timing: {

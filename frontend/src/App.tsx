@@ -148,8 +148,14 @@ export default function App() {
             );
           }
         },
-        () => {
-          // streaming done
+        (timings) => {
+          if (timings) {
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === botMessageId ? { ...msg, timings } : msg
+              )
+            );
+          }
         },
         (error) => {
           console.error('Stream failed:', error);
