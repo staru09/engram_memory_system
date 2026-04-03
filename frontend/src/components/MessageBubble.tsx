@@ -40,9 +40,7 @@ export default function MessageBubble({ msg, showTail }: MessageBubbleProps) {
           </span>
           {!isUser && msg.timings && (
             <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-1 pt-1 border-t border-[#e9edef] text-[10px] text-[#667781] font-mono">
-              <span>recent:{msg.timings.db_ms}ms</span>
-              <span>memory:{msg.timings.retrieval_ms}ms</span>
-              <span>ttft:{msg.timings.first_token_ms}ms</span>
+              <span>ctx:{msg.timings.ctx_ms}ms</span>
               <span>llm:{msg.timings.llm_ms}ms</span>
               <span className="font-semibold">total:{msg.timings.total_ms}ms</span>
             </div>

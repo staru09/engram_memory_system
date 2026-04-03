@@ -245,11 +245,3 @@ def compose_query_context(result: dict) -> str:
 
     return "\n".join(parts)
 
-
-# Backward compatibility
-def retrieve(query: str, query_time=None) -> dict:
-    return retrieve_for_chat(query, query_time)
-
-
-def compose_context(result: dict) -> str:
-    return compose_chat_context(result)

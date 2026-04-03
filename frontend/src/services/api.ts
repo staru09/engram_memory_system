@@ -39,16 +39,6 @@ export const api = {
     return response.json();
   },
 
-  async sendMessage(message: string, threadId: string): Promise<{ response: string; thread_id: string }> {
-    const response = await fetch(`${API_BASE_URL}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, thread_id: threadId }),
-    });
-    if (!response.ok) throw new Error('Failed to send message');
-    return response.json();
-  },
-
   async streamMessage(
     message: string,
     threadId: string,
@@ -57,7 +47,7 @@ export const api = {
     onError: (error: Error) => void,
   ): Promise<void> {
     try {
-      const response = await fetch(`${API_BASE_URL}/chat/stream`, {
+      const response = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, thread_id: threadId }),
@@ -112,8 +102,7 @@ export const api = {
 };
 
 export interface ChatTimings {
-  db_ms: number;
-  retrieval_ms: number;
+  ctx_ms: number;
   prompt_ms: number;
   first_token_ms: number;
   llm_ms: number;
