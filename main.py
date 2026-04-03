@@ -6,13 +6,9 @@ import db
 import vector_store
 from models import Foresight
 from memory_layer.extractor import extract_from_conversation
-from memory_layer.profile_extractor import (
-    update_user_profile, append_to_rolling_summary,
-    maybe_compress_profile, maybe_compress_summary,
-)
+from memory_layer.profile_extractor import update_user_profile, maybe_compress_profile
+from memory_layer.summary_manager import append_to_rolling_summary, maybe_compress_summary
 from agentic_layer.vectorize_service import embed_texts
-
-PROFILE_UPDATE_INTERVAL = 5  # update profile every Nth ingestion
 
 
 def ingest_conversation(conversation: list[dict], source_id: str = "default",
@@ -120,6 +116,7 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
                 valid_from=fs.get("valid_from"),
                 valid_until=fs.get("valid_until"),
                 evidence=fs.get("evidence", ""),
+                duration_days=fs.get("duration_days"),
             ))
         return time.time() - t
 

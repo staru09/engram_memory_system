@@ -10,6 +10,7 @@ class Foresight:
     valid_from: Optional[datetime] = None
     valid_until: Optional[datetime] = None
     evidence: str = ""
+    duration_days: Optional[int] = None
     is_active: bool = True
     created_at: Optional[datetime] = None
 

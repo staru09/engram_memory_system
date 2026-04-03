@@ -58,6 +58,7 @@ def init_schema():
             valid_from      DATE,
             valid_until     DATE,
             evidence        TEXT DEFAULT '',
+            duration_days   INTEGER,
             is_active       BOOLEAN DEFAULT TRUE,
             created_at      TIMESTAMP DEFAULT NOW()
         );
@@ -130,19 +131,6 @@ def init_schema():
 
 
 # ── Facts CRUD ──
-
-def insert_fact(fact_text: str, category: str, conversation_date: str, source_id: str = None) -> int:
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO facts (fact_text, category, conversation_date, source_id) VALUES (%s, %s, %s, %s) RETURNING id",
-        (fact_text, category, conversation_date, source_id)
-    )
-    fact_id = cur.fetchone()[0]
-    conn.commit()
-    cur.close()
-    release_connection(conn)
-    return fact_id
 
 
 def insert_facts_batch(facts: list[dict], source_id: str = None, ingestion_number: int = 0) -> list[int]:
@@ -251,8 +239,8 @@ def insert_foresight(f: Foresight) -> int:
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO foresight (description, valid_from, valid_until, evidence) VALUES (%s, %s, %s, %s) RETURNING id",
-        (f.description, f.valid_from, f.valid_until, f.evidence)
+        "INSERT INTO foresight (description, valid_from, valid_until, evidence, duration_days) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (f.description, f.valid_from, f.valid_until, f.evidence, f.duration_days)
     )
     fid = cur.fetchone()[0]
     conn.commit()
