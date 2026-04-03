@@ -7,8 +7,9 @@ import db
 from models import QueryLog
 from agentic_layer.fetch_mem_service import retrieve_for_query, compose_query_context
 from backend.schemas import QueryRequest
-from backend.gemini import call_gemini_with_tools
+from backend.gemini import call_gemini_with_tools, gemini_client
 from backend.prompt import build_query_prompt
+from config import GEMINI_MODEL
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -48,11 +49,16 @@ def query_memory(request: QueryRequest):
         query_time=query_time,
     )
 
-    # 5. Call Gemini with tools
+    # 5. Count tokens + call Gemini with tools
+    try:
+        token_count = gemini_client.models.count_tokens(model=GEMINI_MODEL, contents=prompt).total_tokens
+    except Exception:
+        token_count = max(1, int(len(prompt) / 3.5))
+
     llm_start = time.time()
     answer = call_gemini_with_tools(prompt)
     llm_time = time.time() - llm_start
-    print(f"  [query] LLM: {llm_time:.1f}s")
+    print(f"  [query] Tokens: {token_count} | LLM: {llm_time:.1f}s")
 
     # 6. Log to query_logs table
     retrieval_timings = raw_result.get("timings", {})
@@ -61,6 +67,7 @@ def query_memory(request: QueryRequest):
             **retrieval_timings,
             "llm_response_s": round(llm_time, 3),
         },
+        "prompt_tokens": token_count,
     }
     try:
         log = QueryLog(

@@ -266,8 +266,8 @@ def get_active_foresight(query_time) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_profile_and_foresight(query_time) -> dict:
-    """Fetch profile + active foresight in a single DB round-trip."""
+def get_query_context(query_time) -> dict:
+    """Fetch profile + active foresight + conversation summary in a single DB round-trip."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -284,12 +284,16 @@ def get_profile_and_foresight(query_time) -> dict:
     """, (query_time, query_time))
     foresight_rows = cur.fetchall()
 
+    cur.execute("SELECT archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
+    summary_row = cur.fetchone()
+
     cur.close()
     release_connection(conn)
 
     return {
         "profile": profile_row["profile_text"] if profile_row else "",
         "foresight": [dict(r) for r in foresight_rows],
+        "summary": dict(summary_row) if summary_row else {"archive_text": "", "recent_text": "", "token_count": 0},
     }
 
 

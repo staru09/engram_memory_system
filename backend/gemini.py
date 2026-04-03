@@ -92,6 +92,11 @@ def call_gemini_with_tools(prompt: str) -> str:
     )
 
     max_rounds = 5
+
+    if not response.candidates or not response.candidates[0].content or not response.candidates[0].content.parts:
+        print(f"[ToolCall] Empty response from Gemini — no candidates/parts")
+        return response.text.strip() if response.text else "Sorry yaar, kuch issue ho gaya."
+
     contents = [user_content, response.candidates[0].content]
 
     for round_num in range(max_rounds):

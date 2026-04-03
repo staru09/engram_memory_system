@@ -22,9 +22,11 @@ def hybrid_search_facts(query: str, top_k: int = RETRIEVAL_TOP_K,
         vec_results = vec_future.result()
 
     # RRF fusion (k=60)
+    # Vector weighted higher — users query in Hinglish, facts stored in English.
+    # Embeddings bridge the language gap, keywords can't.
     K = 60
-    KEYWORD_WEIGHT = 1.5
-    VECTOR_WEIGHT = 1.0
+    KEYWORD_WEIGHT = 0.5
+    VECTOR_WEIGHT = 1.5
 
     scores = {}
     fact_map = {}
@@ -105,26 +107,14 @@ def retrieve_for_query(query: str, query_time=None) -> dict:
     t0 = time.time()
     timings = {}
 
-    # Step 1: Temporal parse + embed query (parallel)
-    from concurrent.futures import ThreadPoolExecutor
+    # Step 1: Temporal parse (regex, ~0ms) + embed query
     reference_date = str(query_time) if query_time else None
+    temporal_result = parse_temporal_query(query, reference_date)
+    timings["temporal_parse_s"] = 0.0
 
-    def _timed_temporal():
-        t = time.time()
-        result = parse_temporal_query(query, reference_date)
-        return result, round(time.time() - t, 3)
-
-    def _timed_embed():
-        t = time.time()
-        result = embed_text(query)
-        return result, round(time.time() - t, 3)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        temporal_future = executor.submit(_timed_temporal)
-        embed_future = executor.submit(_timed_embed)
-
-        temporal_result, timings["temporal_parse_s"] = temporal_future.result()
-        query_embedding, timings["embed_s"] = embed_future.result()
+    t_embed = time.time()
+    query_embedding = embed_text(query)
+    timings["embed_s"] = round(time.time() - t_embed, 3)
 
     # Step 2: Build date filter from temporal parse
     date_filter = None
@@ -143,7 +133,7 @@ def retrieve_for_query(query: str, query_time=None) -> dict:
 
     def _timed_context():
         t = time.time()
-        result = db.get_profile_and_foresight(query_time) if query_time else {"profile": db.get_user_profile(), "foresight": []}
+        result = db.get_query_context(query_time) if query_time else {"profile": db.get_user_profile(), "foresight": [], "summary": {}}
         return result, round(time.time() - t, 3)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -155,6 +145,7 @@ def retrieve_for_query(query: str, query_time=None) -> dict:
 
     profile = ctx["profile"]
     foresight = ctx["foresight"]
+    summary = ctx["summary"]
 
     timings["total_retrieval_s"] = round(time.time() - t0, 3)
     print(f"  [query-retrieval] {len(facts)} facts | temporal: {timings['temporal_parse_s']}s | embed: {timings['embed_s']}s | search: {timings['hybrid_search_s']}s | ctx: {timings['context_s']}s | total: {timings['total_retrieval_s']}s")
@@ -162,7 +153,7 @@ def retrieve_for_query(query: str, query_time=None) -> dict:
     return {
         "profile": profile,
         "foresight": foresight,
-        "summary": {},
+        "summary": summary,
         "facts": facts,
         "timings": timings,
     }
@@ -209,16 +200,31 @@ def compose_chat_context(result: dict) -> str:
 
 
 def compose_query_context(result: dict) -> str:
-    """Compose context for query: matched facts + foresight + profile."""
+    """Compose context for query: matched facts + conversation history + foresight + profile."""
     parts = []
 
-    # Matched facts first
+    # Matched facts first (highest priority for query)
     facts = result.get("facts", [])
     if facts:
         parts.append("=== MATCHED FACTS ===")
         for f in facts:
             date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
             parts.append(f"- {f['fact_text']}{date_tag}")
+        parts.append("")
+
+    # Rolling summary (fills gaps when search misses)
+    summary = result.get("summary", {})
+    archive = summary.get("archive_text", "")
+    recent = summary.get("recent_text", "")
+    if archive or recent:
+        parts.append("=== CONVERSATION HISTORY ===")
+        if archive:
+            parts.append("[Archive]")
+            parts.append(archive)
+            parts.append("")
+        if recent:
+            parts.append("[Recent]")
+            parts.append(recent)
         parts.append("")
 
     # Foresight

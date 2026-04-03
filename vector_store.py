@@ -33,7 +33,13 @@ def init_collections():
             collection_name=COLLECTION_NAME,
             vectors_config=models.VectorParams(size=EMBEDDING_DIM, distance=models.Distance.COSINE),
         )
-        print(f"[qdrant] Created collection '{COLLECTION_NAME}' ({EMBEDDING_DIM}-dim)")
+        # Create payload index for date filtering (required by Qdrant Cloud)
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="date_int",
+            field_schema=models.PayloadSchemaType.INTEGER,
+        )
+        print(f"[qdrant] Created collection '{COLLECTION_NAME}' ({EMBEDDING_DIM}-dim) with date_int index")
 
 
 
