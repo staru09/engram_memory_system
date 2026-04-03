@@ -7,7 +7,7 @@ from config import GEMINI_API_KEY, GEMINI_MODEL
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
-# ── Time Calculator Tool ──
+# Time calculation function that Gemini can call as a tool
 
 def calculate_time_difference(from_time: str, to_time: str) -> dict:
     """Calculate the difference between two times/dates.

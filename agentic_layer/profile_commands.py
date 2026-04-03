@@ -1,6 +1,8 @@
 import re
 import db
 
+## TODO: A better approach would be to have a LLM call for this 
+
 _REMEMBER_PATTERNS = [
     re.compile(r"(?:please\s+)?remember\s+(?:that\s+)?(.+)", re.IGNORECASE),
     re.compile(r"(?:please\s+)?(?:note|save|store)\s+(?:that\s+)?(.+)", re.IGNORECASE),
@@ -45,14 +47,14 @@ def execute_remember(content: str) -> str:
         profile = fact_line
 
     db.upsert_user_profile(profile)
-    return f"Yaad rakh liya: {content}"
+    return f"Added to the profile: {content}"
 
 
 def execute_forget(content: str) -> str:
     """Remove a fact from the user profile."""
     profile = db.get_user_profile()
     if not profile:
-        return "Abhi toh koi profile memory nahi hai."
+        return "Profile doesn't have anything."
 
     lines = profile.split("\n")
     content_lower = content.lower()
@@ -66,10 +68,10 @@ def execute_forget(content: str) -> str:
         new_lines.append(line)
 
     if not removed:
-        return f"Yeh toh mujhe yaad hi nahi tha: {content}"
+        return f"Profile doesn't have this: {content}"
 
     db.upsert_user_profile("\n".join(new_lines))
-    return f"Bhool gaya: {content}"
+    return f"Removed from the profile: {content}"
 
 
 def handle_command(message: str) -> str | None:

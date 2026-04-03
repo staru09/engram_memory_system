@@ -1,8 +1,6 @@
 import time
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_EMBEDDING_MODEL
-
-client = genai.Client(api_key=GEMINI_API_KEY)
+from config import GEMINI_EMBEDDING_MODEL
+from backend.gemini import gemini_client as client
 
 
 def embed_text(text: str) -> list[float]:

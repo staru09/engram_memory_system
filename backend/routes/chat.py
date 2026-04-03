@@ -60,6 +60,7 @@ async def chat(request: ChatRequest):
         query_time=query_time,
     )
     prompt_time = _time.time() - prompt_start
+    prompt_tokens = max(1, int(len(prompt) / 4))
 
     # 4. Stream from Gemini
     async def generate():
@@ -88,7 +89,7 @@ async def chat(request: ChatRequest):
             "llm_ms": round(llm_total * 1000),
             "total_ms": round(total_time * 1000),
         }
-        print(f"  [chat] Context: {ctx_time*1000:.0f}ms | Prompt: {prompt_time*1000:.0f}ms | First token: {(first_token_time or 0)*1000:.0f}ms | LLM: {llm_total*1000:.0f}ms | Total: {total_time*1000:.0f}ms")
+        print(f"  [chat] Context: {ctx_time*1000:.0f}ms | Tokens: {prompt_tokens} | First token: {(first_token_time or 0)*1000:.0f}ms | LLM: {llm_total*1000:.0f}ms | Total: {total_time*1000:.0f}ms")
 
         answer = "".join(full_response)
         db.insert_message(request.thread_id, "assistant", answer)

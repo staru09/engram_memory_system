@@ -1,6 +1,7 @@
 import re
 from datetime import datetime, timedelta
 
+# A lightweight temporal parser used by query mode, better way to do is to use a LLM for this.
 
 def parse_temporal_query(query: str, reference_date: str = None) -> dict | None:
     """Parse temporal references from a query using regex only. No LLM call.

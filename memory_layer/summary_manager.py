@@ -1,10 +1,9 @@
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL, SUMMARY_TOKEN_BUDGET, COMPRESSION_THRESHOLD
+from config import GEMINI_MODEL, SUMMARY_TOKEN_BUDGET, COMPRESSION_THRESHOLD
+from backend.gemini import gemini_client as client
 import db
 import os
 
-client = genai.Client(api_key=GEMINI_API_KEY)
-
+ARCHIVE_MAX_RATIO = 0.20
 _SUMMARY_COMPRESS_PATH = os.path.join(os.path.dirname(__file__), "prompts", "summary_compression.txt")
 
 
@@ -54,9 +53,6 @@ def append_to_rolling_summary(facts: list[dict], current_date: str, conversation
 
     db.get_and_upsert_summary(new_recent=recent, new_token_count=token_count)
     print(f"  [summary] Appended {len(new_entries)} entries to Recent ({token_count} tokens)")
-
-
-ARCHIVE_MAX_RATIO = 0.20  # archive should be ≤20% of total budget
 
 
 def maybe_compress_summary():

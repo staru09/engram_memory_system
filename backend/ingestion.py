@@ -9,14 +9,14 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 INGESTION_MESSAGE_THRESHOLD = 20
-PERIODIC_CHECK_INTERVAL = 600  # seconds
+PERIODIC_CHECK_INTERVAL = 600 
 PERIODIC_MIN_MESSAGES = 4      
 
 _ingestion_lock = threading.Lock()
 _ingesting_threads: set[str] = set()
 
 
-INGESTION_BATCH_SIZE = 20  # process N messages at a time
+INGESTION_BATCH_SIZE = 20 
 
 
 def run_background_ingestion(thread_id: str, messages: list[dict]):

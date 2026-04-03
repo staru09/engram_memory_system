@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor
 import db
 import vector_store
 from agentic_layer.vectorize_service import embed_text
@@ -7,15 +8,18 @@ from config import RETRIEVAL_TOP_K
 
 
 def hybrid_search_facts(query_embedding: list[float], kw_results: list[dict],
-                        top_k: int = RETRIEVAL_TOP_K, date_filter: dict = None) -> list[dict]:
-    """Hybrid search: keyword results (pre-fetched from PG) + vector (Qdrant) → RRF fusion → top-k facts."""
+                        top_k: int = RETRIEVAL_TOP_K, date_filter: dict = None) -> tuple[list[dict], dict]:
+    """Hybrid search: keyword results (pre-fetched from PG) + vector (Qdrant) → RRF fusion → top-k facts.
+    Returns (facts, search_timings)."""
 
-    # Vector search (only external call — keyword already done in get_query_context)
+    # Vector search (Qdrant) — keyword results already fetched in the PG compound query
+    t_vec = time.time()
     vec_results = vector_store.search_facts(query_embedding, top_k * 2, date_filter)
+    vec_time = round(time.time() - t_vec, 3)
 
     # RRF fusion (k=60)
+    t_rrf = time.time()
     # Vector weighted higher — users query in Hinglish, facts stored in English.
-    # Embeddings bridge the language gap, keywords can't.
     K = 60
     KEYWORD_WEIGHT = 0.5
     VECTOR_WEIGHT = 1.5
@@ -52,61 +56,68 @@ def hybrid_search_facts(query_embedding: list[float], kw_results: list[dict],
         entry["rrf_score"] = score
         results.append(entry)
 
-    return results
+    rrf_time = round(time.time() - t_rrf, 3)
 
-
-def retrieve_for_chat(query: str, query_time=None) -> dict:
-    """Chat retrieval: rolling summary + profile + foresight. No search, parallel DB reads."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _profile():
-        t = time.time()
-        r = db.get_user_profile()
-        print(f"    [chat-retrieve] profile: {(time.time()-t)*1000:.0f}ms")
-        return r
-
-    def _foresight():
-        t = time.time()
-        r = db.get_active_foresight(query_time) if query_time else []
-        print(f"    [chat-retrieve] foresight: {(time.time()-t)*1000:.0f}ms")
-        return r
-
-    def _summary():
-        t = time.time()
-        r = db.get_conversation_summary()
-        print(f"    [chat-retrieve] summary: {(time.time()-t)*1000:.0f}ms")
-        return r
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        profile_f = executor.submit(_profile)
-        foresight_f = executor.submit(_foresight)
-        summary_f = executor.submit(_summary)
-
-        profile = profile_f.result()
-        foresight = foresight_f.result()
-        summary = summary_f.result()
-
-    return {
-        "profile": profile,
-        "foresight": foresight,
-        "summary": summary,
-        "facts": [],
+    search_timings = {
+        "vector_s": vec_time,
+        "keyword_results": len(kw_results),
+        "vector_results": len(vec_results),
+        "rrf_s": rrf_time,
     }
 
+    return results, search_timings
 
-def retrieve_for_query(query: str, query_time=None, mode: str = "search") -> dict:
-    """Query retrieval with 3 modes:
-    - "search": hybrid search top-5 facts + profile + foresight (fastest, least tokens)
-    - "summary": hybrid search top-5 + rolling summary + profile + foresight (most tokens, catches search misses)
-    - "date": all facts for detected date + profile + foresight (precise for temporal queries)
-    """
+
+## Used by run_locomo for benchmarking 
+
+# def retrieve_for_chat(query: str, query_time=None) -> dict:
+#     """Chat retrieval: rolling summary + profile + foresight. No search, parallel DB reads."""
+#     from concurrent.futures import ThreadPoolExecutor
+
+#     def _profile():
+#         t = time.time()
+#         r = db.get_user_profile()
+#         print(f"    [chat-retrieve] profile: {(time.time()-t)*1000:.0f}ms")
+#         return r
+
+#     def _foresight():
+#         t = time.time()
+#         r = db.get_active_foresight(query_time) if query_time else []
+#         print(f"    [chat-retrieve] foresight: {(time.time()-t)*1000:.0f}ms")
+#         return r
+
+#     def _summary():
+#         t = time.time()
+#         r = db.get_conversation_summary()
+#         print(f"    [chat-retrieve] summary: {(time.time()-t)*1000:.0f}ms")
+#         return r
+
+#     with ThreadPoolExecutor(max_workers=3) as executor:
+#         profile_f = executor.submit(_profile)
+#         foresight_f = executor.submit(_foresight)
+#         summary_f = executor.submit(_summary)
+
+#         profile = profile_f.result()
+#         foresight = foresight_f.result()
+#         summary = summary_f.result()
+
+#     return {
+#         "profile": profile,
+#         "foresight": foresight,
+#         "summary": summary,
+#         "facts": [],
+#     }
+
+## Main function for query retrieval from embedding to facts retrieval and reranking and profile,foresight fetching.
+
+def retrieve_for_query(query: str, query_time=None, thread_id: str = None) -> dict:
+    """Query retrieval: embed + hybrid search top-5 + profile + foresight."""
     t0 = time.time()
     timings = {}
 
     # Step 1: Temporal parse (regex, ~0ms)
     reference_date = str(query_time) if query_time else None
     temporal_result = parse_temporal_query(query, reference_date)
-    timings["temporal_parse_s"] = 0.0
 
     date_filter = None
     if temporal_result:
@@ -116,74 +127,51 @@ def retrieve_for_query(query: str, query_time=None, mode: str = "search") -> dic
         }
         print(f"  [query-retrieval] Temporal: {date_filter['date_from']} to {date_filter['date_to']}")
 
-    # Step 2: Mode-specific retrieval
-    if mode == "date":
-        # Single DB call: profile + foresight + summary + date facts
-        t_ctx = time.time()
-        ctx = db.get_query_context(query_time, date_filter=date_filter) if query_time else {
-            "profile": db.get_user_profile(), "foresight": [], "summary": {}, "date_facts": []
-        }
-        timings["context_s"] = round(time.time() - t_ctx, 3)
+    # Step 2: Embed + PG context (with keyword) in parallel
+    def _timed_embed():
+        t = time.time()
+        return embed_text(query), round(time.time() - t, 3)
 
-        facts = [
-            {"fact_id": f["id"], "fact_text": f["fact_text"],
-             "conversation_date": f.get("conversation_date"), "category": f.get("category")}
-            for f in ctx.get("date_facts", [])
-        ]
-        timings["embed_s"] = 0.0
-        timings["hybrid_search_s"] = 0.0
+    def _timed_context():
+        """Profile + foresight + messages + keyword search (1 PG round-trip)."""
+        t = time.time()
+        return db.get_query_context(
+            query_time, thread_id=thread_id,
+            keyword_query=query, keyword_top_k=RETRIEVAL_TOP_K * 2,
+            date_filter=date_filter
+        ), round(time.time() - t, 3)
 
-    else:
-        # "search" or "summary" — embed + single PG call (context + keyword) + Qdrant vector search
-        # Step A: Embed query + fetch all PG data in parallel
-        def _timed_embed():
-            t = time.time()
-            result = embed_text(query)
-            return result, round(time.time() - t, 3)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        embed_future = executor.submit(_timed_embed)
+        context_future = executor.submit(_timed_context)
 
-        def _timed_context():
-            t = time.time()
-            result = db.get_query_context(
-                query_time, date_filter=date_filter,
-                keyword_query=query, keyword_top_k=RETRIEVAL_TOP_K * 2
-            ) if query_time else {
-                "profile": db.get_user_profile(), "foresight": [], "summary": {}, "date_facts": [], "keyword_results": []
-            }
-            return result, round(time.time() - t, 3)
+        query_embedding, timings["embed_s"] = embed_future.result()
+        ctx, timings["context_s"] = context_future.result()
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            embed_future = executor.submit(_timed_embed)
-            context_future = executor.submit(_timed_context)
-
-            query_embedding, timings["embed_s"] = embed_future.result()
-            ctx, timings["context_s"] = context_future.result()
-
-        # Step B: Qdrant vector search + RRF fusion (needs embedding from step A)
-        t_search = time.time()
-        facts = hybrid_search_facts(query_embedding, ctx.get("keyword_results", []), RETRIEVAL_TOP_K, date_filter)
-        timings["hybrid_search_s"] = round(time.time() - t_search, 3)
-
-    profile = ctx["profile"]
-    foresight = ctx["foresight"]
-    summary = ctx["summary"] if mode == "summary" else {}
+    # Step 3: Qdrant vector search + RRF fusion
+    t_search = time.time()
+    facts, search_timings = hybrid_search_facts(query_embedding, ctx.get("keyword_results", []), RETRIEVAL_TOP_K, date_filter)
+    timings["hybrid_search_s"] = round(time.time() - t_search, 3)
+    timings.update(search_timings)
 
     timings["total_retrieval_s"] = round(time.time() - t0, 3)
-    timings["mode"] = mode
-    print(f"  [query-retrieval] mode={mode} | {len(facts)} facts | embed: {timings['embed_s']}s | search: {timings['hybrid_search_s']}s | ctx: {timings['context_s']}s | total: {timings['total_retrieval_s']}s")
+    print(f"  [query-retrieval] {len(facts)} facts | embed: {timings['embed_s']}s | vector: {search_timings['vector_s']}s | keyword: {len(ctx.get('keyword_results', []))} hits | rrf: {search_timings['rrf_s']}s | ctx: {timings['context_s']}s | total: {timings['total_retrieval_s']}s")
 
     return {
-        "profile": profile,
-        "foresight": foresight,
-        "summary": summary,
+        "profile": ctx["profile"],
+        "foresight": ctx["foresight"],
         "facts": facts,
+        "recent_messages": ctx.get("recent_messages", []),
         "timings": timings,
     }
 
 
+## TODO: Combined Function to compose context for both chat and query, with some formatting differences if needed. For now, keep separate for clarity and flexibility.
+
 def compose_chat_context(result: dict) -> str:
     """Compose context for chat: summary + foresight + profile."""
     parts = []
-
+    # String Formatting for Chat Endpoints only
     # Rolling summary
     summary = result.get("summary", {})
     archive = summary.get("archive_text", "")
@@ -221,9 +209,9 @@ def compose_chat_context(result: dict) -> str:
 
 
 def compose_query_context(result: dict) -> str:
-    """Compose context for query: matched facts + conversation history + foresight + profile."""
+    """Compose context for query: matched facts + foresight + profile."""
     parts = []
-
+    # String Formatting for query endpoints only
     # Matched facts first (highest priority for query)
     facts = result.get("facts", [])
     if facts:
@@ -231,21 +219,6 @@ def compose_query_context(result: dict) -> str:
         for f in facts:
             date_tag = f" [{f['conversation_date']}]" if f.get("conversation_date") else ""
             parts.append(f"- {f['fact_text']}{date_tag}")
-        parts.append("")
-
-    # Rolling summary (fills gaps when search misses)
-    summary = result.get("summary", {})
-    archive = summary.get("archive_text", "")
-    recent = summary.get("recent_text", "")
-    if archive or recent:
-        parts.append("=== CONVERSATION HISTORY ===")
-        if archive:
-            parts.append("[Archive]")
-            parts.append(archive)
-            parts.append("")
-        if recent:
-            parts.append("[Recent]")
-            parts.append(recent)
         parts.append("")
 
     # Foresight

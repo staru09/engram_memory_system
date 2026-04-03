@@ -130,6 +130,32 @@ def init_schema():
     release_connection(conn)
 
 
+def reset_all_tables():
+    """Wipe and recreate all tables. Does NOT reset Qdrant — call vector_store separately."""
+    import vector_store
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        DROP TABLE IF EXISTS query_logs CASCADE;
+        DROP TABLE IF EXISTS conflict_log CASCADE;
+        DROP TABLE IF EXISTS conversation_summaries CASCADE;
+        DROP TABLE IF EXISTS facts CASCADE;
+        DROP TABLE IF EXISTS foresight CASCADE;
+        DROP TABLE IF EXISTS user_profile CASCADE;
+        DROP TABLE IF EXISTS chat_messages CASCADE;
+        DROP TABLE IF EXISTS chat_threads CASCADE;
+    """)
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+
+    vector_store.delete_collection()
+    vector_store.init_collections()
+
+    init_schema()
+    print("Databases reset.")
+
+
 # ── Facts CRUD ──
 
 
@@ -191,63 +217,88 @@ def insert_facts_and_foresight(facts: list[dict], foresight_entries: list, curre
 def ingest_pg_batch(facts: list[dict], foresight_entries: list, current_date: str,
                     summary_new_text: str, source_id: str = None,
                     ingestion_number: int = 0) -> tuple[list[int], int, int]:
-    """Single PG connection for all ingestion writes:
-    facts insert + foresight expire/insert + summary read/append.
+    """Parallel PG writes across 3 connections:
+    Thread 1: facts insert (needs RETURNING id)
+    Thread 2: foresight expire + insert
+    Thread 3: summary read + append
     Returns (fact_ids, expired_foresight_count, summary_token_count)."""
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    from concurrent.futures import ThreadPoolExecutor
 
-    # 1. Insert facts
-    fact_ids = []
-    for f in facts:
+    def _insert_facts():
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        ids = []
+        for f in facts:
+            cur.execute(
+                "INSERT INTO facts (fact_text, category, conversation_date, source_id, ingestion_number) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (f["text"], f.get("category", "general"), f.get("date"), source_id, ingestion_number)
+            )
+            ids.append(cur.fetchone()["id"])
+        conn.commit()
+        cur.close()
+        release_connection(conn)
+        return ids
+
+    def _upsert_foresight():
+        conn = get_connection()
+        cur = conn.cursor()
         cur.execute(
-            "INSERT INTO facts (fact_text, category, conversation_date, source_id, ingestion_number) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (f["text"], f.get("category", "general"), f.get("date"), source_id, ingestion_number)
+            "UPDATE foresight SET is_active = FALSE WHERE valid_until IS NOT NULL AND valid_until < %s AND is_active = TRUE",
+            (current_date,)
         )
-        fact_ids.append(cur.fetchone()[0])
+        expired = cur.rowcount
+        for f in foresight_entries:
+            cur.execute(
+                "INSERT INTO foresight (description, valid_from, valid_until, evidence, duration_days) VALUES (%s, %s, %s, %s, %s)",
+                (f.description, f.valid_from, f.valid_until, f.evidence, f.duration_days)
+            )
+        conn.commit()
+        cur.close()
+        release_connection(conn)
+        return expired
 
-    # 2. Expire old foresight + insert new
-    cur.execute(
-        "UPDATE foresight SET is_active = FALSE WHERE valid_until IS NOT NULL AND valid_until < %s AND is_active = TRUE",
-        (current_date,)
-    )
-    expired = cur.rowcount
+    def _append_summary():
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
+        row = cur.fetchone()
 
-    for f in foresight_entries:
-        cur.execute(
-            "INSERT INTO foresight (description, valid_from, valid_until, evidence, duration_days) VALUES (%s, %s, %s, %s, %s)",
-            (f.description, f.valid_from, f.valid_until, f.evidence, f.duration_days)
-        )
+        archive = row["archive_text"] if row else ""
+        recent = row["recent_text"] if row else ""
 
-    # 3. Read current summary + append new entries
-    cur.execute("SELECT id, archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
-    row = cur.fetchone()
+        if recent:
+            recent = summary_new_text + "\n" + recent
+        else:
+            recent = summary_new_text
 
-    archive = row["archive_text"] if row else ""
-    recent = row["recent_text"] if row else ""
+        total_text = archive + "\n" + recent if archive else recent
+        token_count = max(1, int(len(total_text) / 4))
 
-    if recent:
-        recent = summary_new_text + "\n" + recent
-    else:
-        recent = summary_new_text
-
-    total_text = archive + "\n" + recent if archive else recent
-    token_count = max(1, int(len(total_text) / 4))
-
-    if row:
-        cur.execute(
-            "UPDATE conversation_summaries SET recent_text = %s, token_count = %s, updated_at = NOW() WHERE id = %s",
-            (recent, token_count, row["id"])
-        )
-    else:
-        cur.execute(
-            "INSERT INTO conversation_summaries (archive_text, recent_text, token_count) VALUES (%s, %s, %s)",
-            (archive, recent, token_count)
+        if row:
+            cur.execute(
+                "UPDATE conversation_summaries SET recent_text = %s, token_count = %s, updated_at = NOW() WHERE id = %s",
+                (recent, token_count, row["id"])
+            )
+        else:
+            cur.execute(
+                "INSERT INTO conversation_summaries (archive_text, recent_text, token_count) VALUES (%s, %s, %s)",
+                (archive, recent, token_count)
         )
 
-    conn.commit()
-    cur.close()
-    release_connection(conn)
+        conn.commit()
+        cur.close()
+        release_connection(conn)
+        return token_count
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        facts_future = executor.submit(_insert_facts)
+        foresight_future = executor.submit(_upsert_foresight)
+        summary_future = executor.submit(_append_summary)
+
+        fact_ids = facts_future.result()
+        expired = foresight_future.result()
+        token_count = summary_future.result()
+
     return fact_ids, expired, token_count
 
 
@@ -436,108 +487,154 @@ def get_active_foresight(query_time) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_query_context(query_time, date_filter: dict = None, keyword_query: str = None, keyword_top_k: int = 10) -> dict:
-    """Fetch all query context in a single DB round-trip:
-    profile + active foresight + conversation summary + (date facts OR keyword search results)."""
+def get_query_context(query_time, thread_id: str = None,
+                      keyword_query: str = None, keyword_top_k: int = 10,
+                      date_filter: dict = None) -> dict:
+    """Fetch all query context in a single SQL query — 1 round-trip:
+    profile + active foresight + unprocessed messages + keyword search results."""
     conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor()
 
-    cur.execute("SELECT profile_text FROM user_profile LIMIT 1")
-    profile_row = cur.fetchone()
-
-    cur.execute("""
-        SELECT id, description, valid_from, valid_until, evidence, created_at
-        FROM foresight
-        WHERE is_active = TRUE
-          AND valid_from <= %s
-          AND (valid_until IS NULL OR valid_until >= %s)
-        ORDER BY created_at DESC
-    """, (query_time, query_time))
-    foresight_rows = cur.fetchall()
-
-    cur.execute("SELECT archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
-    summary_row = cur.fetchone()
-
-    date_facts = []
-    if date_filter:
-        cur.execute(
-            "SELECT id, fact_text, category, conversation_date FROM facts WHERE conversation_date BETWEEN %s AND %s ORDER BY id",
-            (date_filter["date_from"], date_filter["date_to"])
-        )
-        date_facts = [dict(r) for r in cur.fetchall()]
-
-    keyword_results = []
+    # Build keyword subquery
     if keyword_query:
         or_query = _to_or_query(keyword_query)
         if date_filter:
-            cur.execute("""
-                SELECT id, fact_text, category, conversation_date,
-                       ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
-                FROM facts
-                WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
-                  AND conversation_date BETWEEN %s AND %s
-                ORDER BY rank DESC
-                LIMIT %s
-            """, (or_query, or_query, date_filter["date_from"], date_filter["date_to"], keyword_top_k))
+            kw_subquery = """
+                (SELECT COALESCE(json_agg(row_to_json(k)), '[]'::json) FROM (
+                    SELECT id, fact_text, category, conversation_date,
+                           ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
+                    FROM facts
+                    WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
+                      AND conversation_date BETWEEN %s AND %s
+                    ORDER BY rank DESC
+                    LIMIT %s
+                ) k) as keyword_results
+            """
+            kw_params = (or_query, or_query, date_filter["date_from"], date_filter["date_to"], keyword_top_k)
         else:
-            cur.execute("""
-                SELECT id, fact_text, category, conversation_date,
-                       ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
-                FROM facts
-                WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
-                ORDER BY rank DESC
-                LIMIT %s
-            """, (or_query, or_query, keyword_top_k))
-        keyword_results = [dict(r) for r in cur.fetchall()]
+            kw_subquery = """
+                (SELECT COALESCE(json_agg(row_to_json(k)), '[]'::json) FROM (
+                    SELECT id, fact_text, category, conversation_date,
+                           ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
+                    FROM facts
+                    WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
+                    ORDER BY rank DESC
+                    LIMIT %s
+                ) k) as keyword_results
+            """
+            kw_params = (or_query, or_query, keyword_top_k)
+    else:
+        kw_subquery = ""
+        kw_params = ()
 
+    # Build messages subquery
+    if thread_id:
+        msg_subquery = """
+            (SELECT COALESCE(json_agg(row_to_json(m)), '[]'::json) FROM (
+                SELECT id, thread_id, role, content, created_at, ingested
+                FROM chat_messages
+                WHERE thread_id = %s AND ingested = FALSE
+                ORDER BY created_at
+            ) m) as recent_messages
+        """
+        msg_params = (thread_id,)
+    else:
+        msg_subquery = ""
+        msg_params = ()
+
+    # Combine into single query
+    subqueries = [
+        "(SELECT profile_text FROM user_profile LIMIT 1) as profile",
+        """(SELECT COALESCE(json_agg(row_to_json(f)), '[]'::json) FROM (
+                SELECT id, description, valid_from, valid_until, evidence, created_at
+                FROM foresight
+                WHERE is_active = TRUE
+                  AND valid_from <= %s
+                  AND (valid_until IS NULL OR valid_until >= %s)
+                ORDER BY created_at DESC
+            ) f) as foresight""",
+    ]
+    params = [query_time, query_time]
+
+    if msg_subquery:
+        subqueries.append(msg_subquery)
+        params.extend(msg_params)
+    if kw_subquery:
+        subqueries.append(kw_subquery)
+        params.extend(kw_params)
+
+    sql = "SELECT " + ",\n".join(subqueries)
+    cur.execute(sql, tuple(params))
+    row = cur.fetchone()
     cur.close()
     release_connection(conn)
 
+    idx = 0
+    profile = row[idx] or ""; idx += 1
+    foresight = row[idx] if row[idx] else []; idx += 1
+    recent_messages = []
+    if thread_id:
+        recent_messages = row[idx] if row[idx] else []; idx += 1
+    keyword_results = []
+    if keyword_query:
+        keyword_results = row[idx] if row[idx] else []; idx += 1
+
     return {
-        "profile": profile_row["profile_text"] if profile_row else "",
-        "foresight": [dict(r) for r in foresight_rows],
-        "summary": dict(summary_row) if summary_row else {"archive_text": "", "recent_text": "", "token_count": 0},
-        "date_facts": date_facts,
+        "profile": profile,
+        "foresight": foresight,
+        "recent_messages": recent_messages,
         "keyword_results": keyword_results,
     }
 
 
 def get_chat_context(thread_id: str, query_time) -> dict:
-    """Fetch all chat context in a single DB round-trip:
-    profile + active foresight + conversation summary + unprocessed messages."""
+    """Fetch all chat context in a single SQL query — 1 round-trip:
+    profile + active foresight + conversation summary + recent messages.
+    Messages: all unprocessed + last 10 (whichever gives more), deduped by id."""
     conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    cur.execute("SELECT profile_text FROM user_profile LIMIT 1")
-    profile_row = cur.fetchone()
+    cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, description, valid_from, valid_until, evidence, created_at
-        FROM foresight
-        WHERE is_active = TRUE
-          AND valid_from <= %s
-          AND (valid_until IS NULL OR valid_until >= %s)
-        ORDER BY created_at DESC
-    """, (query_time, query_time))
-    foresight_rows = cur.fetchall()
+        SELECT
+            (SELECT profile_text FROM user_profile LIMIT 1) as profile,
+            (SELECT COALESCE(json_agg(row_to_json(f)), '[]'::json) FROM (
+                SELECT id, description, valid_from, valid_until, evidence, created_at
+                FROM foresight
+                WHERE is_active = TRUE
+                  AND valid_from <= %s
+                  AND (valid_until IS NULL OR valid_until >= %s)
+                ORDER BY created_at DESC
+            ) f) as foresight,
+            (SELECT row_to_json(s) FROM (
+                SELECT archive_text, recent_text, token_count
+                FROM conversation_summaries LIMIT 1
+            ) s) as summary,
+            (SELECT COALESCE(json_agg(row_to_json(m)), '[]'::json) FROM (
+                SELECT * FROM (
+                    SELECT id, thread_id, role, content, created_at, ingested
+                    FROM chat_messages
+                    WHERE thread_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                ) last_20
+                ORDER BY created_at ASC
+            ) m) as recent_messages
+    """, (query_time, query_time, thread_id))
 
-    cur.execute("SELECT archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
-    summary_row = cur.fetchone()
-
-    cur.execute(
-        "SELECT * FROM chat_messages WHERE thread_id = %s AND ingested = FALSE ORDER BY created_at",
-        (thread_id,)
-    )
-    message_rows = cur.fetchall()
-
+    row = cur.fetchone()
     cur.close()
     release_connection(conn)
 
+    profile = row[0] or ""
+    foresight = row[1] if row[1] else []
+    summary = row[2] if row[2] else {"archive_text": "", "recent_text": "", "token_count": 0}
+    recent_messages = row[3] if row[3] else []
+
     return {
-        "profile": profile_row["profile_text"] if profile_row else "",
-        "foresight": [dict(r) for r in foresight_rows],
-        "summary": dict(summary_row) if summary_row else {"archive_text": "", "recent_text": "", "token_count": 0},
-        "recent_messages": [dict(r) for r in message_rows],
+        "profile": profile,
+        "foresight": foresight,
+        "summary": summary,
+        "recent_messages": recent_messages,
     }
 
 

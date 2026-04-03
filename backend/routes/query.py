@@ -29,14 +29,9 @@ def query_memory(request: QueryRequest):
             "query_time": query_time.isoformat(),
         }
 
-    # 2. Fetch short-term memory (unprocessed messages from thread)
-    recent_messages = []
-    if request.thread_id:
-        recent_messages = db.get_unprocessed_messages(request.thread_id)
-
-    # 3. Retrieve
+    # 2. Retrieve (includes unprocessed messages in same DB call)
     retrieval_start = time.time()
-    raw_result = retrieve_for_query(request.query, query_time=query_time.replace(tzinfo=None), mode=request.mode)
+    raw_result = retrieve_for_query(request.query, query_time=query_time.replace(tzinfo=None), thread_id=request.thread_id)
     context = compose_query_context(raw_result)
     retrieval_time = time.time() - retrieval_start
     print(f"  [query] Retrieval: {retrieval_time:.2f}s")
@@ -45,7 +40,7 @@ def query_memory(request: QueryRequest):
     prompt = build_query_prompt(
         query=request.query,
         memory_context=context,
-        recent_messages=recent_messages,
+        recent_messages=raw_result.get("recent_messages", []),
         query_time=query_time,
     )
 

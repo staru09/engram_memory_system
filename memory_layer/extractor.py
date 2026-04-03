@@ -1,9 +1,7 @@
 import json
 import os
-from google import genai
-from config import GEMINI_API_KEY, GEMINI_MODEL
-
-client = genai.Client(api_key=GEMINI_API_KEY)
+from config import GEMINI_MODEL
+from backend.gemini import gemini_client as client
 
 _PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "extraction.txt")
 
@@ -20,6 +18,11 @@ def extract_from_conversation(conversation: list[dict], current_date: str,
 
     Returns: {"facts": [...], "foresight": [...]}
     """
+    # Skip extraction if no user messages
+    user_msgs = [t for t in conversation if t["role"] == "user"]
+    if not user_msgs:
+        return {"facts": [], "foresight": []}
+
     # Format conversation text
     lines = []
     for i, turn in enumerate(conversation):
@@ -33,7 +36,7 @@ def extract_from_conversation(conversation: list[dict], current_date: str,
 
     # Build prior context block
     if existing_summary:
-        prior_block = f"PRIOR CONTEXT (rolling summary of earlier conversations):\n{existing_summary}"
+        prior_block = f"PRIOR CONTEXT (rolling summary of earlier conversations — use ONLY for coreference resolution, do NOT extract facts from this):\n{existing_summary}"
     else:
         prior_block = "PRIOR CONTEXT: None (this is the first conversation)."
 

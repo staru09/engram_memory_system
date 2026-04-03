@@ -12,8 +12,7 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
   const [queryText, setQueryText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [response, setResponse] = useState<string | null>(null);
-  const [timing, setTiming] = useState<{ total_retrieval_s: number; llm_response_s: number; mode?: string; prompt_tokens?: number } | null>(null);
-  const [mode, setMode] = useState<'search' | 'summary' | 'date'>('search');
+  const [timing, setTiming] = useState<{ total_retrieval_s: number; llm_response_s: number; prompt_tokens?: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -47,7 +46,7 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
     setTiming(null);
 
     try {
-      const result = await api.queryMemory(queryText.trim(), threadId, mode);
+      const result = await api.queryMemory(queryText.trim(), threadId);
       setResponse(result.response);
       setTiming({
         ...(result.metadata?.timing || {}),
@@ -78,29 +77,6 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
           <button onClick={onClose} className="p-1.5 hover:bg-gray-200 rounded-full transition-colors">
             <X size={20} className="text-[#54656f]" />
           </button>
-        </div>
-
-        {/* Mode Toggle */}
-        <div className="flex items-center gap-2 px-5 py-2 border-b border-gray-100 bg-gray-50">
-          <span className="text-[11px] text-[#667781] font-medium mr-1">Mode:</span>
-          {(['search', 'summary', 'date'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`px-3 py-1 rounded-full text-[11px] font-medium transition-colors ${
-                mode === m
-                  ? 'bg-[#00a884] text-white'
-                  : 'bg-white text-[#667781] border border-gray-200 hover:border-[#00a884] hover:text-[#00a884]'
-              }`}
-            >
-              {m === 'search' ? 'Search' : m === 'summary' ? 'Summary' : 'Date'}
-            </button>
-          ))}
-          <span className="text-[10px] text-[#667781] ml-auto">
-            {mode === 'search' && 'Top-5 hybrid search'}
-            {mode === 'summary' && 'Search + rolling summary'}
-            {mode === 'date' && 'All facts for detected date'}
-          </span>
         </div>
 
         {/* Search Input */}
