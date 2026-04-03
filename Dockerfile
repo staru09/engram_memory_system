@@ -13,6 +13,5 @@ ENV GEMINI_EMBEDDING_MODEL=gemini-embedding-001
 ENV PG_PORT=5432
 ENV PG_USER=postgres
 ENV PG_DB=postgres
-ENV SCENE_SIMILARITY_THRESHOLD=0.95
 
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8080"]
