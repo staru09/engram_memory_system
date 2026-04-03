@@ -12,7 +12,8 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
   const [queryText, setQueryText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [response, setResponse] = useState<string | null>(null);
-  const [timing, setTiming] = useState<{ total_retrieval_s: number; llm_response_s: number } | null>(null);
+  const [timing, setTiming] = useState<{ total_retrieval_s: number; llm_response_s: number; mode?: string; prompt_tokens?: number } | null>(null);
+  const [mode, setMode] = useState<'search' | 'summary' | 'date'>('search');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -46,9 +47,12 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
     setTiming(null);
 
     try {
-      const result = await api.queryMemory(queryText.trim(), threadId);
+      const result = await api.queryMemory(queryText.trim(), threadId, mode);
       setResponse(result.response);
-      setTiming(result.metadata?.timing || null);
+      setTiming({
+        ...(result.metadata?.timing || {}),
+        prompt_tokens: result.metadata?.prompt_tokens,
+      } as any);
     } catch {
       setResponse('Backend se connect nahi ho paya. Server check karo.');
     } finally {
@@ -74,6 +78,29 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
           <button onClick={onClose} className="p-1.5 hover:bg-gray-200 rounded-full transition-colors">
             <X size={20} className="text-[#54656f]" />
           </button>
+        </div>
+
+        {/* Mode Toggle */}
+        <div className="flex items-center gap-2 px-5 py-2 border-b border-gray-100 bg-gray-50">
+          <span className="text-[11px] text-[#667781] font-medium mr-1">Mode:</span>
+          {(['search', 'summary', 'date'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-3 py-1 rounded-full text-[11px] font-medium transition-colors ${
+                mode === m
+                  ? 'bg-[#00a884] text-white'
+                  : 'bg-white text-[#667781] border border-gray-200 hover:border-[#00a884] hover:text-[#00a884]'
+              }`}
+            >
+              {m === 'search' ? 'Search' : m === 'summary' ? 'Summary' : 'Date'}
+            </button>
+          ))}
+          <span className="text-[10px] text-[#667781] ml-auto">
+            {mode === 'search' && 'Top-5 hybrid search'}
+            {mode === 'summary' && 'Search + rolling summary'}
+            {mode === 'date' && 'All facts for detected date'}
+          </span>
         </div>
 
         {/* Search Input */}
@@ -127,36 +154,35 @@ export default function QueryModal({ isOpen, onClose, threadId }: QueryModalProp
                       <Zap size={12} />
                       LLM: {timing.llm_response_s}s
                     </span>
+                    {(timing as any).prompt_tokens && (
+                      <span className="text-[10px]">
+                        {(timing as any).prompt_tokens} tokens
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[#667781]">
-                    {timing.temporal_parse_s != null && (
-                      <span className="flex items-center gap-1">
-                        <span className="w-2 h-2 rounded-sm bg-purple-400" />
-                        Temporal: {timing.temporal_parse_s}s
-                      </span>
-                    )}
-                    {timing.embed_s != null && (
+                    {(timing as any).embed_s > 0 && (
                       <span className="flex items-center gap-1">
                         <span className="w-2 h-2 rounded-sm bg-blue-400" />
-                        Embed: {timing.embed_s}s
+                        Embed: {(timing as any).embed_s}s
                       </span>
                     )}
-                    {timing.hybrid_search_s != null && (
+                    {(timing as any).hybrid_search_s > 0 && (
                       <span className="flex items-center gap-1">
                         <span className="w-2 h-2 rounded-sm bg-green-400" />
-                        Search: {timing.hybrid_search_s}s
+                        Search: {(timing as any).hybrid_search_s}s
                       </span>
                     )}
-                    {timing.profile_s != null && (
+                    {(timing as any).date_fetch_s != null && (
+                      <span className="flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-sm bg-purple-400" />
+                        Date fetch: {(timing as any).date_fetch_s}s
+                      </span>
+                    )}
+                    {(timing as any).context_s != null && (
                       <span className="flex items-center gap-1">
                         <span className="w-2 h-2 rounded-sm bg-yellow-400" />
-                        Profile: {timing.profile_s}s
-                      </span>
-                    )}
-                    {timing.foresight_s != null && (
-                      <span className="flex items-center gap-1">
-                        <span className="w-2 h-2 rounded-sm bg-orange-400" />
-                        Foresight: {timing.foresight_s}s
+                        Context: {(timing as any).context_s}s
                       </span>
                     )}
                   </div>

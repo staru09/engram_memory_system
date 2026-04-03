@@ -13,3 +13,4 @@ class CreateThreadRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     thread_id: str | None = None
+    mode: str = "search"  # "search" | "summary" | "date"

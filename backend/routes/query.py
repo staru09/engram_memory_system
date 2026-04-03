@@ -36,7 +36,7 @@ def query_memory(request: QueryRequest):
 
     # 3. Retrieve
     retrieval_start = time.time()
-    raw_result = retrieve_for_query(request.query, query_time=query_time.replace(tzinfo=None))
+    raw_result = retrieve_for_query(request.query, query_time=query_time.replace(tzinfo=None), mode=request.mode)
     context = compose_query_context(raw_result)
     retrieval_time = time.time() - retrieval_start
     print(f"  [query] Retrieval: {retrieval_time:.2f}s")

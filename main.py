@@ -77,10 +77,25 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     print(f"[post-extract] Running {tasks} in parallel...")
     post_start = time.time()
 
-    def _run_facts_pg():
-        """Store facts in PostgreSQL."""
+    def _run_pg_store():
+        """Store facts + foresight in PostgreSQL (single connection)."""
         t = time.time()
-        fact_ids = db.insert_facts_batch(facts, source_id=source_id, ingestion_number=ingestion_count)
+        foresight_entries = [
+            Foresight(
+                description=fs["description"],
+                valid_from=fs.get("valid_from"),
+                valid_until=fs.get("valid_until"),
+                evidence=fs.get("evidence", ""),
+                duration_days=fs.get("duration_days"),
+            )
+            for fs in foresight
+        ]
+        fact_ids, expired = db.insert_facts_and_foresight(
+            facts, foresight_entries, current_date,
+            source_id=source_id, ingestion_number=ingestion_count
+        )
+        if expired:
+            print(f"  [foresight] Expired {expired} entries")
         return time.time() - t, fact_ids
 
     def _run_facts_qdrant(fact_ids):
@@ -105,49 +120,32 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         profile, conflicts = update_user_profile(facts)
         return time.time() - t, len(conflicts)
 
-    def _run_foresight():
-        t = time.time()
-        expired = db.expire_foresight(current_date)
-        if expired:
-            print(f"  [foresight] Expired {expired} entries")
-        for fs in foresight:
-            db.insert_foresight(Foresight(
-                description=fs["description"],
-                valid_from=fs.get("valid_from"),
-                valid_until=fs.get("valid_until"),
-                evidence=fs.get("evidence", ""),
-                duration_days=fs.get("duration_days"),
-            ))
-        return time.time() - t
-
     def _run_summary_append():
         t = time.time()
         append_to_rolling_summary(facts, current_date, conversation_time)
         return time.time() - t
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        # Step 2a: PostgreSQL facts (must complete first for fact_ids)
-        pg_future = executor.submit(_run_facts_pg)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        # Step 2a: PostgreSQL facts + foresight (single connection, must complete first for fact_ids)
+        pg_future = executor.submit(_run_pg_store)
         pg_time, fact_ids = pg_future.result()
 
-        # Steps 2b + 2c + 3 + 4 in parallel (2b needs fact_ids from 2a)
+        # Steps 2b + 2c + 4 in parallel (2b needs fact_ids from 2a)
         qdrant_future = executor.submit(_run_facts_qdrant, fact_ids)
         summary_future = executor.submit(_run_summary_append)
-        foresight_future = executor.submit(_run_foresight)
 
         if should_update_profile:
             profile_future = executor.submit(_run_profile_update)
 
         qdrant_time = qdrant_future.result()
         summary_time = summary_future.result()
-        foresight_time = foresight_future.result()
 
         if should_update_profile:
             profile_time, conflict_count = profile_future.result()
-            print(f"  [post-extract] PG: {pg_time:.1f}s | Qdrant: {qdrant_time:.1f}s | Summary: {summary_time:.1f}s | Foresight: {foresight_time:.1f}s | Profile: {profile_time:.1f}s | Total: {time.time() - post_start:.1f}s")
+            print(f"  [post-extract] PG: {pg_time:.1f}s | Qdrant: {qdrant_time:.1f}s | Summary: {summary_time:.1f}s | Profile: {profile_time:.1f}s | Total: {time.time() - post_start:.1f}s")
         else:
             conflict_count = 0
-            print(f"  [post-extract] PG: {pg_time:.1f}s | Qdrant: {qdrant_time:.1f}s | Summary: {summary_time:.1f}s | Foresight: {foresight_time:.1f}s | Total: {time.time() - post_start:.1f}s")
+            print(f"  [post-extract] PG: {pg_time:.1f}s | Qdrant: {qdrant_time:.1f}s | Summary: {summary_time:.1f}s | Total: {time.time() - post_start:.1f}s")
 
     # Step 5: Compression if needed
     maybe_compress_summary()

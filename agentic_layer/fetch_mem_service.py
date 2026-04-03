@@ -6,20 +6,12 @@ from agentic_layer.temporal_parser import parse_temporal_query
 from config import RETRIEVAL_TOP_K
 
 
-def hybrid_search_facts(query: str, top_k: int = RETRIEVAL_TOP_K,
-                        date_filter: dict = None, query_embedding: list[float] = None) -> list[dict]:
-    """Hybrid search: keyword (PostgreSQL) + vector (Qdrant) → RRF fusion → top-k facts."""
-    if query_embedding is None:
-        query_embedding = embed_text(query)
+def hybrid_search_facts(query_embedding: list[float], kw_results: list[dict],
+                        top_k: int = RETRIEVAL_TOP_K, date_filter: dict = None) -> list[dict]:
+    """Hybrid search: keyword results (pre-fetched from PG) + vector (Qdrant) → RRF fusion → top-k facts."""
 
-    # Parallel search
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        kw_future = executor.submit(db.keyword_search_facts, query, top_k * 2, date_filter)
-        vec_future = executor.submit(vector_store.search_facts, query_embedding, top_k * 2, date_filter)
-
-        kw_results = kw_future.result()
-        vec_results = vec_future.result()
+    # Vector search (only external call — keyword already done in get_query_context)
+    vec_results = vector_store.search_facts(query_embedding, top_k * 2, date_filter)
 
     # RRF fusion (k=60)
     # Vector weighted higher — users query in Hinglish, facts stored in English.
@@ -102,21 +94,20 @@ def retrieve_for_chat(query: str, query_time=None) -> dict:
     }
 
 
-def retrieve_for_query(query: str, query_time=None) -> dict:
-    """Query retrieval: hybrid search facts + profile + foresight + temporal parse."""
+def retrieve_for_query(query: str, query_time=None, mode: str = "search") -> dict:
+    """Query retrieval with 3 modes:
+    - "search": hybrid search top-5 facts + profile + foresight (fastest, least tokens)
+    - "summary": hybrid search top-5 + rolling summary + profile + foresight (most tokens, catches search misses)
+    - "date": all facts for detected date + profile + foresight (precise for temporal queries)
+    """
     t0 = time.time()
     timings = {}
 
-    # Step 1: Temporal parse (regex, ~0ms) + embed query
+    # Step 1: Temporal parse (regex, ~0ms)
     reference_date = str(query_time) if query_time else None
     temporal_result = parse_temporal_query(query, reference_date)
     timings["temporal_parse_s"] = 0.0
 
-    t_embed = time.time()
-    query_embedding = embed_text(query)
-    timings["embed_s"] = round(time.time() - t_embed, 3)
-
-    # Step 2: Build date filter from temporal parse
     date_filter = None
     if temporal_result:
         date_filter = {
@@ -125,30 +116,60 @@ def retrieve_for_query(query: str, query_time=None) -> dict:
         }
         print(f"  [query-retrieval] Temporal: {date_filter['date_from']} to {date_filter['date_to']}")
 
-    # Step 3: Hybrid search + profile/foresight (parallel)
-    def _timed_search():
-        t = time.time()
-        result = hybrid_search_facts(query, RETRIEVAL_TOP_K, date_filter, query_embedding)
-        return result, round(time.time() - t, 3)
+    # Step 2: Mode-specific retrieval
+    if mode == "date":
+        # Single DB call: profile + foresight + summary + date facts
+        t_ctx = time.time()
+        ctx = db.get_query_context(query_time, date_filter=date_filter) if query_time else {
+            "profile": db.get_user_profile(), "foresight": [], "summary": {}, "date_facts": []
+        }
+        timings["context_s"] = round(time.time() - t_ctx, 3)
 
-    def _timed_context():
-        t = time.time()
-        result = db.get_query_context(query_time) if query_time else {"profile": db.get_user_profile(), "foresight": [], "summary": {}}
-        return result, round(time.time() - t, 3)
+        facts = [
+            {"fact_id": f["id"], "fact_text": f["fact_text"],
+             "conversation_date": f.get("conversation_date"), "category": f.get("category")}
+            for f in ctx.get("date_facts", [])
+        ]
+        timings["embed_s"] = 0.0
+        timings["hybrid_search_s"] = 0.0
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        facts_future = executor.submit(_timed_search)
-        context_future = executor.submit(_timed_context)
+    else:
+        # "search" or "summary" — embed + single PG call (context + keyword) + Qdrant vector search
+        # Step A: Embed query + fetch all PG data in parallel
+        def _timed_embed():
+            t = time.time()
+            result = embed_text(query)
+            return result, round(time.time() - t, 3)
 
-        facts, timings["hybrid_search_s"] = facts_future.result()
-        ctx, timings["context_s"] = context_future.result()
+        def _timed_context():
+            t = time.time()
+            result = db.get_query_context(
+                query_time, date_filter=date_filter,
+                keyword_query=query, keyword_top_k=RETRIEVAL_TOP_K * 2
+            ) if query_time else {
+                "profile": db.get_user_profile(), "foresight": [], "summary": {}, "date_facts": [], "keyword_results": []
+            }
+            return result, round(time.time() - t, 3)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            embed_future = executor.submit(_timed_embed)
+            context_future = executor.submit(_timed_context)
+
+            query_embedding, timings["embed_s"] = embed_future.result()
+            ctx, timings["context_s"] = context_future.result()
+
+        # Step B: Qdrant vector search + RRF fusion (needs embedding from step A)
+        t_search = time.time()
+        facts = hybrid_search_facts(query_embedding, ctx.get("keyword_results", []), RETRIEVAL_TOP_K, date_filter)
+        timings["hybrid_search_s"] = round(time.time() - t_search, 3)
 
     profile = ctx["profile"]
     foresight = ctx["foresight"]
-    summary = ctx["summary"]
+    summary = ctx["summary"] if mode == "summary" else {}
 
     timings["total_retrieval_s"] = round(time.time() - t0, 3)
-    print(f"  [query-retrieval] {len(facts)} facts | temporal: {timings['temporal_parse_s']}s | embed: {timings['embed_s']}s | search: {timings['hybrid_search_s']}s | ctx: {timings['context_s']}s | total: {timings['total_retrieval_s']}s")
+    timings["mode"] = mode
+    print(f"  [query-retrieval] mode={mode} | {len(facts)} facts | embed: {timings['embed_s']}s | search: {timings['hybrid_search_s']}s | ctx: {timings['context_s']}s | total: {timings['total_retrieval_s']}s")
 
     return {
         "profile": profile,

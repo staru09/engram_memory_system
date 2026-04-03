@@ -152,6 +152,119 @@ def insert_facts_batch(facts: list[dict], source_id: str = None, ingestion_numbe
     return ids
 
 
+def insert_facts_and_foresight(facts: list[dict], foresight_entries: list, current_date,
+                                source_id: str = None, ingestion_number: int = 0) -> tuple[list[int], int]:
+    """Insert facts + expire/insert foresight in a single connection.
+    Returns (fact_ids, expired_count)."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Insert facts
+    fact_ids = []
+    for f in facts:
+        cur.execute(
+            "INSERT INTO facts (fact_text, category, conversation_date, source_id, ingestion_number) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (f["text"], f.get("category", "general"), f.get("date"), source_id, ingestion_number)
+        )
+        fact_ids.append(cur.fetchone()[0])
+
+    # Expire old foresight
+    cur.execute(
+        "UPDATE foresight SET is_active = FALSE WHERE valid_until IS NOT NULL AND valid_until < %s AND is_active = TRUE",
+        (current_date,)
+    )
+    expired = cur.rowcount
+
+    # Insert new foresight
+    for f in foresight_entries:
+        cur.execute(
+            "INSERT INTO foresight (description, valid_from, valid_until, evidence, duration_days) VALUES (%s, %s, %s, %s, %s)",
+            (f.description, f.valid_from, f.valid_until, f.evidence, f.duration_days)
+        )
+
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return fact_ids, expired
+
+
+def ingest_pg_batch(facts: list[dict], foresight_entries: list, current_date: str,
+                    summary_new_text: str, source_id: str = None,
+                    ingestion_number: int = 0) -> tuple[list[int], int, int]:
+    """Single PG connection for all ingestion writes:
+    facts insert + foresight expire/insert + summary read/append.
+    Returns (fact_ids, expired_foresight_count, summary_token_count)."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # 1. Insert facts
+    fact_ids = []
+    for f in facts:
+        cur.execute(
+            "INSERT INTO facts (fact_text, category, conversation_date, source_id, ingestion_number) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (f["text"], f.get("category", "general"), f.get("date"), source_id, ingestion_number)
+        )
+        fact_ids.append(cur.fetchone()[0])
+
+    # 2. Expire old foresight + insert new
+    cur.execute(
+        "UPDATE foresight SET is_active = FALSE WHERE valid_until IS NOT NULL AND valid_until < %s AND is_active = TRUE",
+        (current_date,)
+    )
+    expired = cur.rowcount
+
+    for f in foresight_entries:
+        cur.execute(
+            "INSERT INTO foresight (description, valid_from, valid_until, evidence, duration_days) VALUES (%s, %s, %s, %s, %s)",
+            (f.description, f.valid_from, f.valid_until, f.evidence, f.duration_days)
+        )
+
+    # 3. Read current summary + append new entries
+    cur.execute("SELECT id, archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
+    row = cur.fetchone()
+
+    archive = row["archive_text"] if row else ""
+    recent = row["recent_text"] if row else ""
+
+    if recent:
+        recent = summary_new_text + "\n" + recent
+    else:
+        recent = summary_new_text
+
+    total_text = archive + "\n" + recent if archive else recent
+    token_count = max(1, int(len(total_text) / 3.5))
+
+    if row:
+        cur.execute(
+            "UPDATE conversation_summaries SET recent_text = %s, token_count = %s, updated_at = NOW() WHERE id = %s",
+            (recent, token_count, row["id"])
+        )
+    else:
+        cur.execute(
+            "INSERT INTO conversation_summaries (archive_text, recent_text, token_count) VALUES (%s, %s, %s)",
+            (archive, recent, token_count)
+        )
+
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return fact_ids, expired, token_count
+
+
+def get_facts_by_date(date_from: str, date_to: str) -> list[dict]:
+    """Return all facts within a date range."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT id, fact_text, category, conversation_date FROM facts WHERE conversation_date BETWEEN %s AND %s ORDER BY id",
+        (date_from, date_to)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    release_connection(conn)
+    return [dict(r) for r in rows]
+
+
 def get_all_facts() -> list[dict]:
     """Return all facts for Qdrant rebuild."""
     conn = get_connection()
@@ -233,6 +346,43 @@ def upsert_user_profile(profile_text: str):
     release_connection(conn)
 
 
+def get_and_upsert_profile(new_profile: str = None, conflicts: list = None) -> str:
+    """Get current profile and optionally update it + log conflicts in a single connection."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, profile_text FROM user_profile LIMIT 1")
+    row = cur.fetchone()
+    current_profile = row[1] if row else ""
+    current_id = row[0] if row else None
+
+    if new_profile is not None:
+        if current_id:
+            cur.execute(
+                "UPDATE user_profile SET profile_text = %s, updated_at = NOW() WHERE id = %s",
+                (new_profile, current_id)
+            )
+        else:
+            cur.execute(
+                "INSERT INTO user_profile (profile_text) VALUES (%s)",
+                (new_profile,)
+            )
+
+    if conflicts:
+        for c in conflicts:
+            cur.execute(
+                "INSERT INTO conflict_log (category, old_value, new_value, resolution) VALUES (%s, %s, %s, %s)",
+                (c.get("category", "unknown"), c.get("old_value", ""), c.get("new_value", ""), "recency_wins")
+            )
+
+    if new_profile is not None or conflicts:
+        conn.commit()
+
+    cur.close()
+    release_connection(conn)
+    return current_profile
+
+
 # ── Foresight ──
 
 def insert_foresight(f: Foresight) -> int:
@@ -247,6 +397,26 @@ def insert_foresight(f: Foresight) -> int:
     cur.close()
     release_connection(conn)
     return fid
+
+
+def expire_and_insert_foresight(current_date, foresight_entries: list) -> int:
+    """Expire old foresight + insert new entries in a single connection."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE foresight SET is_active = FALSE WHERE valid_until IS NOT NULL AND valid_until < %s AND is_active = TRUE",
+        (current_date,)
+    )
+    expired = cur.rowcount
+    for f in foresight_entries:
+        cur.execute(
+            "INSERT INTO foresight (description, valid_from, valid_until, evidence, duration_days) VALUES (%s, %s, %s, %s, %s)",
+            (f.description, f.valid_from, f.valid_until, f.evidence, f.duration_days)
+        )
+    conn.commit()
+    cur.close()
+    release_connection(conn)
+    return expired
 
 
 def get_active_foresight(query_time) -> list[dict]:
@@ -266,8 +436,9 @@ def get_active_foresight(query_time) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_query_context(query_time) -> dict:
-    """Fetch profile + active foresight + conversation summary in a single DB round-trip."""
+def get_query_context(query_time, date_filter: dict = None, keyword_query: str = None, keyword_top_k: int = 10) -> dict:
+    """Fetch all query context in a single DB round-trip:
+    profile + active foresight + conversation summary + (date facts OR keyword search results)."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -287,6 +458,38 @@ def get_query_context(query_time) -> dict:
     cur.execute("SELECT archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
     summary_row = cur.fetchone()
 
+    date_facts = []
+    if date_filter:
+        cur.execute(
+            "SELECT id, fact_text, category, conversation_date FROM facts WHERE conversation_date BETWEEN %s AND %s ORDER BY id",
+            (date_filter["date_from"], date_filter["date_to"])
+        )
+        date_facts = [dict(r) for r in cur.fetchall()]
+
+    keyword_results = []
+    if keyword_query:
+        or_query = _to_or_query(keyword_query)
+        if date_filter:
+            cur.execute("""
+                SELECT id, fact_text, category, conversation_date,
+                       ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
+                FROM facts
+                WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
+                  AND conversation_date BETWEEN %s AND %s
+                ORDER BY rank DESC
+                LIMIT %s
+            """, (or_query, or_query, date_filter["date_from"], date_filter["date_to"], keyword_top_k))
+        else:
+            cur.execute("""
+                SELECT id, fact_text, category, conversation_date,
+                       ts_rank(fact_tsv, websearch_to_tsquery('english', %s), 32) AS rank
+                FROM facts
+                WHERE fact_tsv @@ websearch_to_tsquery('english', %s)
+                ORDER BY rank DESC
+                LIMIT %s
+            """, (or_query, or_query, keyword_top_k))
+        keyword_results = [dict(r) for r in cur.fetchall()]
+
     cur.close()
     release_connection(conn)
 
@@ -294,6 +497,8 @@ def get_query_context(query_time) -> dict:
         "profile": profile_row["profile_text"] if profile_row else "",
         "foresight": [dict(r) for r in foresight_rows],
         "summary": dict(summary_row) if summary_row else {"archive_text": "", "recent_text": "", "token_count": 0},
+        "date_facts": date_facts,
+        "keyword_results": keyword_results,
     }
 
 
@@ -378,6 +583,37 @@ def get_conversation_summary() -> dict:
     if not row:
         return {"archive_text": "", "recent_text": "", "token_count": 0}
     return dict(row)
+
+
+def get_and_upsert_summary(new_archive: str = None, new_recent: str = None, new_token_count: int = None) -> dict:
+    """Get current summary and optionally update it in a single connection."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, archive_text, recent_text, token_count FROM conversation_summaries LIMIT 1")
+    row = cur.fetchone()
+
+    current = dict(row) if row else {"id": None, "archive_text": "", "recent_text": "", "token_count": 0}
+
+    if new_archive is not None or new_recent is not None or new_token_count is not None:
+        archive = new_archive if new_archive is not None else current["archive_text"]
+        recent = new_recent if new_recent is not None else current["recent_text"]
+        token_count = new_token_count if new_token_count is not None else current["token_count"]
+
+        if current["id"]:
+            cur.execute(
+                "UPDATE conversation_summaries SET archive_text = %s, recent_text = %s, token_count = %s, updated_at = NOW() WHERE id = %s",
+                (archive, recent, token_count, current["id"])
+            )
+        else:
+            cur.execute(
+                "INSERT INTO conversation_summaries (archive_text, recent_text, token_count) VALUES (%s, %s, %s)",
+                (archive, recent, token_count)
+            )
+        conn.commit()
+
+    cur.close()
+    release_connection(conn)
+    return {"archive_text": current["archive_text"], "recent_text": current["recent_text"], "token_count": current["token_count"]}
 
 
 def upsert_conversation_summary(archive_text: str, recent_text: str, token_count: int):

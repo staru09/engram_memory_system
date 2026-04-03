@@ -2,7 +2,6 @@ import json
 import os
 from google import genai
 from config import GEMINI_API_KEY, GEMINI_MODEL, PROFILE_TOKEN_BUDGET, COMPRESSION_THRESHOLD
-from models import ConflictLog
 import db
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -148,7 +147,7 @@ def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
     if not new_facts:
         return db.get_user_profile(), []
 
-    existing_profile = db.get_user_profile()
+    existing_profile = db.get_and_upsert_profile()
     is_first_update = not existing_profile
 
     # For the LLM prompt, show a placeholder so it knows to only add
@@ -195,16 +194,8 @@ def update_user_profile(new_facts: list[dict]) -> tuple[str, list[dict]]:
             base_profile = "" if is_first_update else existing_profile
             updated_profile = _apply_operations(base_profile, operations)
 
-            # Store profile
-            db.upsert_user_profile(updated_profile)
-
-            # Log conflicts
-            for c in conflicts:
-                db.insert_conflict_log(ConflictLog(
-                    category=c.get("category", "unknown"),
-                    old_value=c.get("old_value", ""),
-                    new_value=c.get("new_value", ""),
-                ))
+            # Store profile + log conflicts in single connection
+            db.get_and_upsert_profile(new_profile=updated_profile, conflicts=conflicts)
 
             op_summary = ", ".join(
                 f"{sum(1 for o in operations if o.get('action') == a)} {a}"

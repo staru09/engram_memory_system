@@ -14,17 +14,8 @@ def _load_prompt(path):
 
 
 def _count_tokens(text: str) -> int:
-    """Count tokens using Gemini API."""
-    try:
-        result = client.models.count_tokens(
-            model=GEMINI_MODEL,
-            contents=text
-        )
-        return result.total_tokens
-    except Exception as e:
-        fallback = max(1, int(len(text) / 3.5))
-        print(f"  [tokens] API failed ({e}), using fallback: {fallback}")
-        return fallback
+    """Estimate token count from character length. ~3.5 chars per token for English."""
+    return max(1, int(len(text) / 3.5))
 
 
 def append_to_rolling_summary(facts: list[dict], current_date: str, conversation_time: str = None):
@@ -46,8 +37,8 @@ def append_to_rolling_summary(facts: list[dict], current_date: str, conversation
         new_entries.append(f"[{date_tag}] {f['text']}")
     new_text = "\n".join(new_entries)
 
-    # Get current summary
-    summary = db.get_conversation_summary()
+    # Get current summary + update in single connection
+    summary = db.get_and_upsert_summary()
     archive = summary["archive_text"]
     recent = summary["recent_text"]
 
@@ -61,7 +52,7 @@ def append_to_rolling_summary(facts: list[dict], current_date: str, conversation
     total_text = archive + "\n" + recent if archive else recent
     token_count = _count_tokens(total_text)
 
-    db.upsert_conversation_summary(archive, recent, token_count)
+    db.get_and_upsert_summary(new_recent=recent, new_token_count=token_count)
     print(f"  [summary] Appended {len(new_entries)} entries to Recent ({token_count} tokens)")
 
 
