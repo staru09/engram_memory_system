@@ -232,7 +232,7 @@ def ingest_pg_batch(facts: list[dict], foresight_entries: list, current_date: st
         recent = summary_new_text
 
     total_text = archive + "\n" + recent if archive else recent
-    token_count = max(1, int(len(total_text) / 3.5))
+    token_count = max(1, int(len(total_text) / 4))
 
     if row:
         cur.execute(

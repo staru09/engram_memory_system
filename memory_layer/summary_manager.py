@@ -14,8 +14,8 @@ def _load_prompt(path):
 
 
 def _count_tokens(text: str) -> int:
-    """Estimate token count from character length. ~3.5 chars per token for English."""
-    return max(1, int(len(text) / 3.5))
+    """Estimate token count from character length. 4 chars per token for English."""
+    return max(1, int(len(text) / 4))
 
 
 def append_to_rolling_summary(facts: list[dict], current_date: str, conversation_time: str = None):
