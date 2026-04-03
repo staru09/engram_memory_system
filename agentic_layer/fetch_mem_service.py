@@ -135,33 +135,29 @@ def retrieve_for_query(query: str, query_time=None) -> dict:
         }
         print(f"  [query-retrieval] Temporal: {date_filter['date_from']} to {date_filter['date_to']}")
 
-    # Step 3: Hybrid search + profile + foresight (all parallel)
+    # Step 3: Hybrid search + profile/foresight (parallel)
     def _timed_search():
         t = time.time()
         result = hybrid_search_facts(query, RETRIEVAL_TOP_K, date_filter, query_embedding)
         return result, round(time.time() - t, 3)
 
-    def _timed_profile():
+    def _timed_context():
         t = time.time()
-        result = db.get_user_profile()
+        result = db.get_profile_and_foresight(query_time) if query_time else {"profile": db.get_user_profile(), "foresight": []}
         return result, round(time.time() - t, 3)
 
-    def _timed_foresight():
-        t = time.time()
-        result = db.get_active_foresight(query_time) if query_time else []
-        return result, round(time.time() - t, 3)
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         facts_future = executor.submit(_timed_search)
-        profile_future = executor.submit(_timed_profile)
-        foresight_future = executor.submit(_timed_foresight)
+        context_future = executor.submit(_timed_context)
 
         facts, timings["hybrid_search_s"] = facts_future.result()
-        profile, timings["profile_s"] = profile_future.result()
-        foresight, timings["foresight_s"] = foresight_future.result()
+        ctx, timings["context_s"] = context_future.result()
+
+    profile = ctx["profile"]
+    foresight = ctx["foresight"]
 
     timings["total_retrieval_s"] = round(time.time() - t0, 3)
-    print(f"  [query-retrieval] {len(facts)} facts | temporal: {timings['temporal_parse_s']}s | embed: {timings['embed_s']}s | search: {timings['hybrid_search_s']}s | profile: {timings['profile_s']}s | foresight: {timings['foresight_s']}s | total: {timings['total_retrieval_s']}s")
+    print(f"  [query-retrieval] {len(facts)} facts | temporal: {timings['temporal_parse_s']}s | embed: {timings['embed_s']}s | search: {timings['hybrid_search_s']}s | ctx: {timings['context_s']}s | total: {timings['total_retrieval_s']}s")
 
     return {
         "profile": profile,

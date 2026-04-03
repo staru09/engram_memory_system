@@ -266,6 +266,33 @@ def get_active_foresight(query_time) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_profile_and_foresight(query_time) -> dict:
+    """Fetch profile + active foresight in a single DB round-trip."""
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("SELECT profile_text FROM user_profile LIMIT 1")
+    profile_row = cur.fetchone()
+
+    cur.execute("""
+        SELECT id, description, valid_from, valid_until, evidence, created_at
+        FROM foresight
+        WHERE is_active = TRUE
+          AND valid_from <= %s
+          AND (valid_until IS NULL OR valid_until >= %s)
+        ORDER BY created_at DESC
+    """, (query_time, query_time))
+    foresight_rows = cur.fetchall()
+
+    cur.close()
+    release_connection(conn)
+
+    return {
+        "profile": profile_row["profile_text"] if profile_row else "",
+        "foresight": [dict(r) for r in foresight_rows],
+    }
+
+
 def get_chat_context(thread_id: str, query_time) -> dict:
     """Fetch all chat context in a single DB round-trip:
     profile + active foresight + conversation summary + unprocessed messages."""
