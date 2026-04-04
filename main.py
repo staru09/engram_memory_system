@@ -1,8 +1,7 @@
 import re
 import time
+import asyncio
 from datetime import datetime, timezone, timedelta
-from concurrent.futures import ThreadPoolExecutor
-import re
 import db
 import vector_store
 from models import Foresight
@@ -86,44 +85,15 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     ingestion_count = db.get_and_increment_ingestion_count()
     should_update_profile = True
 
-    # ── Step 2: PG store + Embed + Profile (all parallel) ──
-    def _run_pg_store():
-        t = time.time()
-        foresight_entries = [
-            Foresight(
-                description=fs["description"],
-                valid_from=fs.get("valid_from"),
-                valid_until=fs.get("valid_until"),
-                evidence=fs.get("evidence", ""),
-                duration_days=fs.get("duration_days"),
-            )
-            for fs in foresight
-        ]
-        new_entries = []
-        for f in facts:
-            date = f.get("date", current_date)
-            date_tag = f"{date} {conversation_time} IST" if conversation_time else date
-            new_entries.append(f"[{date_tag}] {f['text']}")
-        summary_new_text = "\n".join(new_entries)
-
-        fact_ids, expired, token_count = db.ingest_pg_batch(
-            facts, foresight_entries, current_date, summary_new_text,
-            source_id=source_id, ingestion_number=ingestion_count
-        )
-        elapsed = time.time() - t
-        if expired:
-            print(f"    [pg] Expired {expired} foresight entries")
-        print(f"    [pg] {len(facts)} facts + {len(foresight)} foresight + summary ({token_count} tokens) in {elapsed:.1f}s")
-        return elapsed, fact_ids
-
-    def _run_embed():
+    # ── Step 2: PG store + Embed + Profile (all parallel via asyncio) ──
+    def _run_embed_sync():
         t = time.time()
         embeddings = embed_texts([f["text"] for f in facts])
         elapsed = time.time() - t
         print(f"    [embed] {len(facts)} facts embedded in {elapsed:.1f}s")
         return elapsed, embeddings
 
-    def _run_profile_update():
+    def _run_profile_sync():
         t = time.time()
         profile, conflicts = update_user_profile(facts)
         elapsed = time.time() - t
@@ -133,20 +103,58 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
     print(f"[3/5 parallel] PG store + Embed" + (" + Profile" if should_update_profile else "") + "...")
     t_parallel = time.time()
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        pg_future = executor.submit(_run_pg_store)
-        embed_future = executor.submit(_run_embed)
-        if should_update_profile:
-            profile_future = executor.submit(_run_profile_update)
+    # Prepare PG batch args
+    foresight_entries = [
+        Foresight(
+            description=fs["description"],
+            valid_from=fs.get("valid_from"),
+            valid_until=fs.get("valid_until"),
+            evidence=fs.get("evidence", ""),
+            duration_days=fs.get("duration_days"),
+        )
+        for fs in foresight
+    ]
+    new_entries = []
+    for f in facts:
+        date = f.get("date", current_date)
+        date_tag = f"{date} {conversation_time} IST" if conversation_time else date
+        new_entries.append(f"[{date_tag}] {f['text']}")
+    summary_new_text = "\n".join(new_entries)
 
-        timings["pg_store"], fact_ids = pg_future.result()
-        timings["embed"], embeddings = embed_future.result()
+    async def _timed_pg():
+        t = time.time()
+        result = await db.ingest_pg_batch(
+            facts, foresight_entries, current_date, summary_new_text,
+            source_id=source_id, ingestion_number=ingestion_count
+        )
+        elapsed = time.time() - t
+        return elapsed, result
 
+    async def _run_parallel():
+        tasks = [
+            _timed_pg(),
+            asyncio.to_thread(_run_embed_sync),
+        ]
         if should_update_profile:
-            timings["profile"], conflict_count = profile_future.result()
-        else:
-            timings["profile"] = 0
-            conflict_count = 0
+            tasks.append(asyncio.to_thread(_run_profile_sync))
+
+        return await asyncio.gather(*tasks)
+
+    # Ingestion runs in a background daemon thread — safe to create event loop
+    results = asyncio.run(_run_parallel())
+
+    timings["pg_store"], (fact_ids, expired, token_count) = results[0]
+    if expired:
+        print(f"    [pg] Expired {expired} foresight entries")
+    print(f"    [pg] {len(facts)} facts + {len(foresight)} foresight + summary ({token_count} tokens) in {timings['pg_store']:.1f}s")
+
+    timings["embed"], embeddings = results[1]
+
+    if should_update_profile:
+        timings["profile"], conflict_count = results[2]
+    else:
+        timings["profile"] = 0
+        conflict_count = 0
 
     timings["parallel_total"] = time.time() - t_parallel
 

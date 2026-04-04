@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.post("/query")
-def query_memory(request: QueryRequest):
+async def query_memory(request: QueryRequest):
     query_time = datetime.now(IST)
 
     # 1. Check if any memories exist
@@ -31,7 +31,7 @@ def query_memory(request: QueryRequest):
 
     # 2. Retrieve (includes unprocessed messages in same DB call)
     retrieval_start = time.time()
-    raw_result = retrieve_for_query(request.query, query_time=query_time.replace(tzinfo=None), thread_id=request.thread_id)
+    raw_result = await retrieve_for_query(request.query, query_time=query_time.replace(tzinfo=None), thread_id=request.thread_id)
     context = compose_query_context(raw_result)
     retrieval_time = time.time() - retrieval_start
     print(f"  [query] Retrieval: {retrieval_time:.2f}s")

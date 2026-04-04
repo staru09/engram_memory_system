@@ -214,15 +214,15 @@ def insert_facts_and_foresight(facts: list[dict], foresight_entries: list, curre
     return fact_ids, expired
 
 
-def ingest_pg_batch(facts: list[dict], foresight_entries: list, current_date: str,
+async def ingest_pg_batch(facts: list[dict], foresight_entries: list, current_date: str,
                     summary_new_text: str, source_id: str = None,
                     ingestion_number: int = 0) -> tuple[list[int], int, int]:
-    """Parallel PG writes across 3 connections:
-    Thread 1: facts insert (needs RETURNING id)
-    Thread 2: foresight expire + insert
-    Thread 3: summary read + append
+    """Parallel PG writes across 3 connections via asyncio:
+    Task 1: facts insert (needs RETURNING id)
+    Task 2: foresight expire + insert
+    Task 3: summary read + append
     Returns (fact_ids, expired_foresight_count, summary_token_count)."""
-    from concurrent.futures import ThreadPoolExecutor
+    import asyncio
 
     def _insert_facts():
         conn = get_connection()
@@ -290,14 +290,11 @@ def ingest_pg_batch(facts: list[dict], foresight_entries: list, current_date: st
         release_connection(conn)
         return token_count
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        facts_future = executor.submit(_insert_facts)
-        foresight_future = executor.submit(_upsert_foresight)
-        summary_future = executor.submit(_append_summary)
-
-        fact_ids = facts_future.result()
-        expired = foresight_future.result()
-        token_count = summary_future.result()
+    fact_ids, expired, token_count = await asyncio.gather(
+        asyncio.to_thread(_insert_facts),
+        asyncio.to_thread(_upsert_foresight),
+        asyncio.to_thread(_append_summary),
+    )
 
     return fact_ids, expired, token_count
 
@@ -527,14 +524,18 @@ def get_query_context(query_time, thread_id: str = None,
         kw_subquery = ""
         kw_params = ()
 
-    # Build messages subquery
+    # Build messages subquery — last 20 messages regardless of ingestion status
     if thread_id:
         msg_subquery = """
             (SELECT COALESCE(json_agg(row_to_json(m)), '[]'::json) FROM (
-                SELECT id, thread_id, role, content, created_at, ingested
-                FROM chat_messages
-                WHERE thread_id = %s AND ingested = FALSE
-                ORDER BY created_at
+                SELECT * FROM (
+                    SELECT id, thread_id, role, content, created_at, ingested
+                    FROM chat_messages
+                    WHERE thread_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                ) last_20
+                ORDER BY created_at ASC
             ) m) as recent_messages
         """
         msg_params = (thread_id,)

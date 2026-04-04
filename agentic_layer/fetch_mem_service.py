@@ -1,5 +1,5 @@
 import time
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 import db
 import vector_store
 from agentic_layer.vectorize_service import embed_text
@@ -110,7 +110,7 @@ def hybrid_search_facts(query_embedding: list[float], kw_results: list[dict],
 
 ## Main function for query retrieval from embedding to facts retrieval and reranking and profile,foresight fetching.
 
-def retrieve_for_query(query: str, query_time=None, thread_id: str = None) -> dict:
+async def retrieve_for_query(query: str, query_time=None, thread_id: str = None) -> dict:
     """Query retrieval: embed + hybrid search top-5 + profile + foresight."""
     t0 = time.time()
     timings = {}
@@ -127,26 +127,26 @@ def retrieve_for_query(query: str, query_time=None, thread_id: str = None) -> di
         }
         print(f"  [query-retrieval] Temporal: {date_filter['date_from']} to {date_filter['date_to']}")
 
-    # Step 2: Embed + PG context (with keyword) in parallel
-    def _timed_embed():
+    # Step 2: Embed + PG context (with keyword) in parallel via asyncio
+    async def _timed_embed():
         t = time.time()
-        return embed_text(query), round(time.time() - t, 3)
+        result = await asyncio.to_thread(embed_text, query)
+        return result, round(time.time() - t, 3)
 
-    def _timed_context():
-        """Profile + foresight + messages + keyword search (1 PG round-trip)."""
+    async def _timed_context():
         t = time.time()
-        return db.get_query_context(
-            query_time, thread_id=thread_id,
-            keyword_query=query, keyword_top_k=RETRIEVAL_TOP_K * 2,
-            date_filter=date_filter
-        ), round(time.time() - t, 3)
+        result = await asyncio.to_thread(
+            db.get_query_context,
+            query_time, thread_id,
+            query, RETRIEVAL_TOP_K * 2,
+            date_filter
+        )
+        return result, round(time.time() - t, 3)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        embed_future = executor.submit(_timed_embed)
-        context_future = executor.submit(_timed_context)
-
-        query_embedding, timings["embed_s"] = embed_future.result()
-        ctx, timings["context_s"] = context_future.result()
+    (query_embedding, timings["embed_s"]), (ctx, timings["context_s"]) = await asyncio.gather(
+        _timed_embed(),
+        _timed_context(),
+    )
 
     # Step 3: Qdrant vector search + RRF fusion
     t_search = time.time()
