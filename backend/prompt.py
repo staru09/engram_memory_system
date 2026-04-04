@@ -1,22 +1,29 @@
 from datetime import datetime, timezone, timedelta
 
 
+def _to_ist(ts, IST) -> str:
+    """Convert a timestamp (datetime or string) from UTC to IST HH:MM string."""
+    if ts is None:
+        return ""
+    if isinstance(ts, str):
+        try:
+            ts = datetime.fromisoformat(ts)
+        except ValueError:
+            return str(ts)
+    if hasattr(ts, 'strftime'):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(IST).strftime('%H:%M')
+    return str(ts)
+
+
 def build_chat_prompt(memory_context: str, recent_messages: list[dict],
                       query_time: datetime) -> str:
     IST = timezone(timedelta(hours=5, minutes=30))
     history_lines = []
     for msg in recent_messages:
         role = "User" if msg["role"] == "user" else "Assistant"
-        ts = msg.get("created_at")
-        if hasattr(ts, 'strftime'):
-            # DB stores UTC, convert to IST for display
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            time_str = ts.astimezone(IST).strftime('%H:%M')
-        elif ts:
-            time_str = str(ts)
-        else:
-            time_str = ""
+        time_str = _to_ist(msg.get("created_at"), IST)
         history_lines.append(f"[{time_str}] {role}: {msg['content']}")
     history_block = "\n".join(history_lines)
 
@@ -57,14 +64,12 @@ MEMORY RULES:
 - When multiple similar events exist (e.g., two different orders), carefully distinguish them by their timestamps and details. Do NOT mix up details across events.
 - TEMPORAL GROUNDING: Only mention specific times if they are EXPLICITLY stated in the context. NEVER fabricate or round times. When multiple facts mention different times for different events, carefully match each time to the correct event.
 - EVENT REASONING: When multiple facts describe events in overlapping timeframes, reason about their relationship. If someone went out and also had dinner during the same period, the dinner likely happened while they were out — do not present them as separate trips.
-- You have a `calculate_time_difference` tool. You MUST call it for ANY question involving time differences, durations, elapsed time, remaining time, or travel time — even if the answer seems obvious. NEVER compute time in your head. NEVER skip the tool call. If the user asks "kitna time", "how long", "kab tak", or anything about duration — ALWAYS call the tool first, then use the result in your answer.
-- REMAINING TIME REASONING: When the user asks "kitna time bacha", "kab tak aayega", or how much time is left for something (delivery, travel, event, etc.), follow these steps:
-  1. Search RECENT CHAT and MEMORY CONTEXT for when the user mentioned the expected duration or ETA (e.g., "15 min me aa jayega", "2 ghante lagenge")
-  2. Note the TIMESTAMP of that message (e.g., [11:16])
-  3. Compute expected completion time: message timestamp + mentioned duration (use the tool)
-  4. Compute remaining time: expected completion time vs CURRENT TIME (use the tool)
-  5. If the expected time has already passed, say so ("ab toh aa jana chahiye tha")
-  The user DID mention the time — look carefully through ALL messages before saying "tune bataya nahi tha".
+- TIME REASONING: When the user asks "kitna time bacha", "kab tak aayega", "how long", or anything about duration/remaining time:
+  1. Find the message timestamp where the duration was mentioned (e.g., [13:00] "10 min me aa jayega")
+  2. Compute expected time: message_time + duration (e.g., 13:00 + 10 min = 13:10)
+  3. Compare with CURRENT TIME to determine remaining time or if it has passed
+  4. If the expected time has already passed, say "ab toh aa jana chahiye tha"
+  5. Do the math yourself using the timestamps — keep it simple and natural.
 
 === CURRENT TIME ===
 {query_time.strftime('%Y-%m-%d %H:%M')}
@@ -84,15 +89,7 @@ def build_query_prompt(query: str, memory_context: str, recent_messages: list[di
     history_lines = []
     for msg in recent_messages:
         role = "User" if msg["role"] == "user" else "Assistant"
-        ts = msg.get("created_at")
-        if hasattr(ts, 'strftime'):
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            time_str = ts.astimezone(IST).strftime('%H:%M')
-        elif ts:
-            time_str = str(ts)
-        else:
-            time_str = ""
+        time_str = _to_ist(msg.get("created_at"), IST)
         history_lines.append(f"[{time_str}] {role}: {msg['content']}")
     history_block = "\n".join(history_lines)
 
@@ -118,7 +115,12 @@ MEMORY RULES:
 - NEVER invent, assume, or guess facts.
 - TEMPORAL GROUNDING: Only mention specific times if they are EXPLICITLY stated in the context. NEVER fabricate or round times. When multiple facts mention different times for different events, carefully match each time to the correct event.
 - EVENT REASONING: When multiple facts describe events in overlapping timeframes, reason about their relationship. If someone went out and also had dinner during the same period, the dinner likely happened while they were out — do not present them as separate trips.
-- You have a `calculate_time_difference` tool. You MUST call it for ANY question involving time differences or durations.
+- You have a `calculate_time_difference` tool. You MUST call it for ANY question involving time differences, durations, elapsed time, remaining time, or "kitna time" / "kab tak" / "kab aayega" questions — even if the answer seems obvious. NEVER compute time in your head. NEVER skip the tool call.
+- REMAINING TIME REASONING: When asked "kitna time bacha" or "kab aayega":
+  1. Find the message timestamp where the duration was mentioned (e.g., [12:26] "40 min me aa jayega")
+  2. Compute: expected_arrival = message_time + duration (use the tool)
+  3. Compute: remaining = expected_arrival - CURRENT TIME (use the tool)
+  4. If already past, say "ab toh aa jana chahiye tha"
 
 === CURRENT TIME ===
 {query_time.strftime('%Y-%m-%d %H:%M')}

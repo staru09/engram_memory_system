@@ -55,8 +55,8 @@ def init_schema():
         CREATE TABLE IF NOT EXISTS foresight (
             id              SERIAL PRIMARY KEY,
             description     TEXT NOT NULL,
-            valid_from      DATE,
-            valid_until     DATE,
+            valid_from      TIMESTAMP,
+            valid_until     TIMESTAMP,
             evidence        TEXT DEFAULT '',
             duration_days   INTEGER,
             is_active       BOOLEAN DEFAULT TRUE,

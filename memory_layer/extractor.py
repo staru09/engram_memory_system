@@ -23,15 +23,36 @@ def extract_from_conversation(conversation: list[dict], current_date: str,
     if not user_msgs:
         return {"facts": [], "foresight": []}
 
-    # Format conversation text
+    # Format conversation text with timestamps
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
     lines = []
     for i, turn in enumerate(conversation):
         speaker = turn["role"]
         content = turn["content"]
+        # Include timestamp if available
+        ts = turn.get("created_at")
+        time_str = ""
+        if ts:
+            if hasattr(ts, 'astimezone'):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                time_str = ts.astimezone(IST).strftime('%H:%M')
+            elif isinstance(ts, str):
+                try:
+                    from datetime import datetime as dt
+                    parsed = dt.fromisoformat(ts)
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    time_str = parsed.astimezone(IST).strftime('%H:%M')
+                except ValueError:
+                    pass
+
+        prefix = f"[{time_str}]" if time_str else f"[Turn {i}]"
         if not extract_all_speakers and speaker == "assistant":
-            lines.append(f"[Turn {i}] [CONTEXT ONLY] {content}")
+            lines.append(f"{prefix} [CONTEXT ONLY] {content}")
         else:
-            lines.append(f"[Turn {i}] {content}")
+            lines.append(f"{prefix} {content}")
     conv_text = "\n".join(lines)
 
     # Build prior context block

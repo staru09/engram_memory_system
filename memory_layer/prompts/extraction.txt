@@ -92,7 +92,7 @@ FORESIGHT SIGNALS:
 Extract forward-looking or time-bounded information:
 - Temporary illness: ~1-2 weeks
 - Travel plans: specific dates
-- Deliveries: precise ETA
+- Deliveries: precise ETA with time
 - New job/move: indefinite (valid_until = null, duration_days = null)
 - Deadlines: valid until the deadline date
 If no foresight signals exist, return an empty array.
@@ -100,9 +100,19 @@ Each foresight MUST include:
 - "evidence": the specific user statement that triggered this prediction
 - "duration_days": integer number of days this foresight is expected to last (null if indefinite)
 
+TIME-SPECIFIC FORESIGHT:
+- When the user mentions a specific time or duration (e.g., "40 min me aa jayega", "7 AM flight", "2 PM meeting"), include the TIME in valid_from and valid_until.
+- Use format "YYYY-MM-DD HH:MM" when time is known, "YYYY-MM-DD" when only date is known.
+- For deliveries/arrivals: valid_from = time of ordering, valid_until = expected arrival time.
+- Compute valid_until from the conversation timestamp + mentioned duration.
+
 Foresight examples:
+- User says at 12:26 PM "ordered paneer chawal from Swiggy, 40 min me aa jayega":
+  {"description": "Paneer chawal order from Swiggy arriving", "valid_from": "2025-06-15 12:26", "valid_until": "2025-06-15 13:06", "evidence": "Ordered paneer chawal from Swiggy, 40 min delivery estimate", "duration_days": 1}
+- User says at 12:27 PM "10 min me blinkit se dahi bhi aajaegi":
+  {"description": "Dahi order from Blinkit arriving", "valid_from": "2025-06-15 12:27", "valid_until": "2025-06-15 12:37", "evidence": "Ordered dahi via Blinkit, 10 min delivery estimate", "duration_days": 1}
 - User says "I have a 7 AM flight to Delhi on Friday":
-  {"description": "Flight to Delhi at 7 AM", "valid_from": "2025-06-20", "valid_until": "2025-06-20", "evidence": "User said they have a 7 AM flight to Delhi on Friday", "duration_days": 1}
+  {"description": "Flight to Delhi at 7 AM", "valid_from": "2025-06-20 07:00", "valid_until": "2025-06-20", "evidence": "User said they have a 7 AM flight to Delhi on Friday", "duration_days": 1}
 - User says "Doctor told me to rest and avoid spicy food for a week":
   {"description": "User should avoid spicy food and rest per doctor's advice", "valid_from": "2025-06-15", "valid_until": "2025-06-22", "evidence": "Doctor advised rest and avoiding spicy food for one week", "duration_days": 7}
 - User says "I just started a new job at a startup":
@@ -121,7 +131,7 @@ Output as JSON:
     {"text": "fact text here", "category": "category_name", "date": "YYYY-MM-DD"}
   ],
   "foresight": [
-    {"description": "foresight description here", "valid_from": "YYYY-MM-DD", "valid_until": "YYYY-MM-DD", "evidence": "user's exact statement or paraphrase that triggered this", "duration_days": 7}
+    {"description": "foresight description here", "valid_from": "YYYY-MM-DD HH:MM or YYYY-MM-DD", "valid_until": "YYYY-MM-DD HH:MM or YYYY-MM-DD", "evidence": "user's exact statement or paraphrase that triggered this", "duration_days": 7}
   ]
 }
 

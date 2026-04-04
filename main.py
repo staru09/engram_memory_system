@@ -69,9 +69,10 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         if f.get("date") and not _date_re.match(str(f["date"])):
             print(f"  [warn] Invalid date '{f['date']}' in fact, using {current_date}")
             f["date"] = current_date
+    _datetime_re = re.compile(r'^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$')
     for fs in foresight:
         for key in ("valid_from", "valid_until"):
-            if fs.get(key) and not _date_re.match(str(fs[key])):
+            if fs.get(key) and not _datetime_re.match(str(fs[key])):
                 print(f"  [warn] Invalid {key} '{fs[key]}' in foresight, setting to None")
                 fs[key] = None
 
