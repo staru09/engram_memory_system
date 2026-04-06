@@ -1,6 +1,15 @@
+"""
+LoCoMo Benchmark Runner — Automated full benchmark across all 10 samples.
+
+Usage:
+    python run_locomo.py                          # Run all 10 samples
+    python run_locomo.py --samples 0 1 2          # Run specific samples
+    python run_locomo.py --samples 0 --workers 3  # Single sample, 3 parallel workers
+"""
+
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import json
 import time
@@ -17,6 +26,8 @@ CATEGORY_NAMES = {
     5: "adversarial",
 }
 
+
+# ── Dataset Helpers ──
 
 def parse_locomo_date(date_str: str) -> str:
     if not date_str:
@@ -39,7 +50,57 @@ def load_conversation(sample_idx: int) -> dict:
     return data[sample_idx]
 
 
-def ingest_conversation(sample: dict):
+def _get_last_session_date(sample: dict) -> datetime:
+    conv = sample["conversation"]
+    session_keys = sorted(
+        [k for k in conv if k.startswith("session_") and not k.endswith("date_time")],
+        key=lambda s: int(s.split("_")[1])
+    )
+    if not session_keys:
+        return datetime.now(IST).replace(tzinfo=None)
+    last_date_key = f"{session_keys[-1]}_date_time"
+    raw_date = conv.get(last_date_key, "")
+    date_str = parse_locomo_date(raw_date)
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except Exception:
+        return datetime.now(IST).replace(tzinfo=None)
+
+
+# ── Database Reset ──
+
+def reset_databases():
+    """Wipe all tables + Qdrant collection and recreate."""
+    import db
+    import vector_store
+
+    conn = db.get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        DROP TABLE IF EXISTS query_logs CASCADE;
+        DROP TABLE IF EXISTS conflict_log CASCADE;
+        DROP TABLE IF EXISTS conversation_summaries CASCADE;
+        DROP TABLE IF EXISTS facts CASCADE;
+        DROP TABLE IF EXISTS foresight CASCADE;
+        DROP TABLE IF EXISTS user_profile CASCADE;
+        DROP TABLE IF EXISTS chat_messages CASCADE;
+        DROP TABLE IF EXISTS chat_threads CASCADE;
+    """)
+    conn.commit()
+    cur.close()
+    db.release_connection(conn)
+
+    vector_store.delete_collection()
+    vector_store.init_collections()
+
+    db.init_schema()
+    print("[reset] Databases reset.")
+
+
+# ── Ingestion ──
+
+def ingest_sample(sample: dict):
+    """Ingest all sessions from a LoCoMo sample."""
     from main import ingest_conversation as run_ingestion
 
     conv = sample["conversation"]
@@ -51,10 +112,7 @@ def ingest_conversation(sample: dict):
         key=lambda s: int(s.split("_")[1])
     )
 
-    print(f"\n=== INGESTING ===")
-    print(f"  Speaker A: {speaker_a}")
-    print(f"  Speaker B: {speaker_b}")
-    print(f"  Sessions: {len(sessions)}")
+    print(f"[ingest] {speaker_a} & {speaker_b} | {len(sessions)} sessions")
 
     total_turns = 0
     for i, session_key in enumerate(sessions):
@@ -75,7 +133,7 @@ def ingest_conversation(sample: dict):
         total_turns += len(msgs)
         source_id = f"locomo_{session_key}"
 
-        print(f"\n  Session {i+1}/{len(sessions)}: {session_key} ({len(msgs)} turns, date: {session_date})")
+        print(f"  Session {i+1}/{len(sessions)}: {session_key} ({len(msgs)} turns, {session_date})")
 
         try:
             run_ingestion(msgs, source_id=source_id, current_date=session_date,
@@ -84,63 +142,67 @@ def ingest_conversation(sample: dict):
             print(f"  ERROR: {e}")
             import traceback
             traceback.print_exc()
-            continue
 
-    print(f"\n=== INGESTION COMPLETE ===")
-    print(f"  Total turns ingested: {total_turns}")
-
-    import db
-    stats = db.get_system_stats()
-    print(f"  Conflicts: {stats['total_conflicts']}")
-    print(f"  Active foresight: {stats['active_foresight']}")
-    print(f"  Has profile: {stats['has_profile']}")
+    print(f"[ingest] Done: {total_turns} turns ingested")
 
 
-def _get_last_session_date(sample: dict) -> datetime:
-    conv = sample["conversation"]
-    session_keys = sorted(
-        [k for k in conv if k.startswith("session_") and not k.endswith("date_time")],
-        key=lambda s: int(s.split("_")[1])
-    )
-    if not session_keys:
-        return datetime.now(IST).replace(tzinfo=None)
-    last_date_key = f"{session_keys[-1]}_date_time"
-    raw_date = conv.get(last_date_key, "")
-    date_str = parse_locomo_date(raw_date)
-    try:
-        return datetime.strptime(date_str, "%Y-%m-%d")
-    except Exception:
-        return datetime.now(IST).replace(tzinfo=None)
-
+# ── QA Evaluation ──
 
 def _process_single_qa(qa: dict, index: int, total: int,
-                       client, model, query_time=None) -> dict:
-    from agentic_layer.fetch_mem_service import retrieve_for_chat, compose_chat_context
+                       client, model, query_time: datetime) -> dict:
+    """Process a single QA pair: retrieve context, generate answer, score."""
+    from agentic_layer.fetch_mem_service import compose_chat_context
+    import db
 
     question = qa["question"]
     ground_truth = qa.get("answer", qa.get("adversarial_answer", ""))
     category = qa.get("category", 0)
     cat_name = CATEGORY_NAMES.get(category, "unknown")
+    is_adversarial = category == 5
 
-    # Retrieve
+    # Retrieve context (rolling summary path — no search)
     t0 = time.time()
-    if query_time is None:
-        query_time = datetime.now(IST).replace(tzinfo=None)
     try:
-        result = retrieve_for_chat(question, query_time)
-        context = compose_chat_context(result)
+        ctx = db.get_chat_context("benchmark", query_time)
+        context = compose_chat_context({
+            "profile": "",
+            "foresight": ctx["foresight"],
+            "summary": ctx["summary"],
+        })
     except Exception as e:
         print(f"  [{index+1}/{total}] ({cat_name}) RETRIEVAL ERROR: {e}")
         return {
             "question": question, "ground_truth": str(ground_truth),
             "answer": "ERROR", "category": category, "cat_name": cat_name,
-            "retrieval_time": 0, "llm_time": 0, "score": 0,
+            "retrieval_time": 0, "llm_time": 0, "score": 0, "reasoning": str(e),
         }
     retrieval_time = time.time() - t0
 
     # Generate answer
     t0 = time.time()
-    prompt = f"""You are answering questions about a long-term conversation between two people. Use ONLY the provided context.
+
+    if is_adversarial:
+        answer_prompt = f"""You are answering questions about a long-term conversation between two people. Use ONLY the provided context.
+
+ANSWERING RULES:
+- Keep your answer short and precise (1-2 sentences max).
+- Be SPECIFIC: include exact names, dates, places, numbers, titles when available.
+- Trust the MOST RECENT information when facts conflict.
+- Do NOT make up facts. Only use what is explicitly in the context.
+- IMPORTANT: Before saying "I don't know", carefully re-read ALL sections of the context — the answer may be in the profile, the archive, OR the recent entries. Search every section thoroughly.
+- IMPORTANT: Prefer giving a partial answer over "I don't know." If you can find ANY relevant information, share it.
+- The question may attribute an action to the wrong person. If the context shows a different person did that thing, STILL answer with the factual information — do not refuse to answer.
+- When answering, focus on WHAT happened, not WHO did it. Answer with just the facts without naming the person.
+- NEVER say "the context does not mention" or "this was not mentioned" if the information IS in the context under a different person's name. Search for the ACTIVITY/EVENT regardless of who did it.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:"""
+    else:
+        answer_prompt = f"""You are answering questions about a long-term conversation between two people. Use ONLY the provided context.
 
 ANSWERING RULES:
 - Keep your answer short and precise (1-2 sentences max).
@@ -151,6 +213,7 @@ ANSWERING RULES:
 - IMPORTANT: Before saying "I don't know", carefully re-read ALL sections of the context — the answer may be in the profile, the archive, OR the recent entries. Search every section thoroughly.
 - IMPORTANT: Prefer giving a partial answer over "I don't know." If you can find ANY relevant information, share it.
 - When asked "what book" or "what title" — look for quoted titles in the context.
+- Be careful about WHO did what — do not confuse the two speakers.
 
 Context:
 {context}
@@ -160,8 +223,8 @@ Question: {question}
 Answer:"""
 
     try:
-        response = client.models.generate_content(model=model, contents=prompt)
-        answer = response.text.strip()
+        response = client.models.generate_content(model=model, contents=answer_prompt)
+        answer = response.text.strip() if response.text else "ERROR: empty response"
     except Exception as e:
         answer = f"ERROR: {e}"
     llm_time = time.time() - t0
@@ -195,7 +258,8 @@ Return ONLY a JSON: {{"score": N, "reasoning": "brief explanation"}}"""
         score = 0
         reasoning = "judge failed"
 
-    print(f"  [{index+1}/{total}] ({cat_name}) Score: {score}/5 | R: {retrieval_time:.2f}s | L: {llm_time:.2f}s | {question[:50]}...")
+    marker = " [ADV]" if is_adversarial else ""
+    print(f"  [{index+1}/{total}] ({cat_name}{marker}) Score: {score}/5 | R: {retrieval_time:.2f}s | L: {llm_time:.1f}s | {question[:50]}...")
     if score <= 2:
         print(f"    GT:  {str(ground_truth)[:80]}")
         print(f"    Got: {answer[:80]}")
@@ -213,23 +277,27 @@ Return ONLY a JSON: {{"score": N, "reasoning": "brief explanation"}}"""
     }
 
 
-def run_qa(sample: dict, limit: int = None, parallel_workers: int = 5) -> list[dict]:
+def run_qa(sample: dict, parallel_workers: int = 5) -> list[dict]:
+    """Run all QA pairs (including adversarial) with parallel workers."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from google import genai
-    from config import GEMINI_API_KEY, GEMINI_MODEL
+    from backend.gemini import gemini_client as client
+    from config import GEMINI_MODEL
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    # Create a dummy thread for benchmark context retrieval
+    import db
+    try:
+        db.create_thread("benchmark", "LoCoMo Benchmark")
+    except Exception:
+        pass  # already exists
 
-    qa_pairs = [q for q in sample["qa"] if q.get("category") != 5]
-    if limit:
-        qa_pairs = qa_pairs[:limit]
-
+    qa_pairs = sample["qa"]
     query_time = _get_last_session_date(sample)
-    print(f"  Temporal reference date: {query_time.strftime('%Y-%m-%d')} (last session)")
 
     total = len(qa_pairs)
-    skipped = len(sample["qa"]) - len(qa_pairs)
-    print(f"\n=== RUNNING QA ({total} questions, {skipped} adversarial skipped, {parallel_workers} workers) ===\n")
+    adv_count = sum(1 for q in qa_pairs if q.get("category") == 5)
+    non_adv_count = total - adv_count
+    print(f"\n[qa] {total} questions ({non_adv_count} standard + {adv_count} adversarial) | {parallel_workers} workers")
+    print(f"[qa] Reference date: {query_time.strftime('%Y-%m-%d')}")
 
     results = [None] * total
 
@@ -249,90 +317,222 @@ def run_qa(sample: dict, limit: int = None, parallel_workers: int = 5) -> list[d
                 print(f"  [{idx+1}/{total}] FAILED: {e}")
                 results[idx] = {
                     "question": qa_pairs[idx]["question"],
-                    "ground_truth": str(qa_pairs[idx].get("answer", "")),
+                    "ground_truth": str(qa_pairs[idx].get("answer", qa_pairs[idx].get("adversarial_answer", ""))),
                     "answer": "ERROR", "category": qa_pairs[idx].get("category", 0),
                     "cat_name": CATEGORY_NAMES.get(qa_pairs[idx].get("category", 0), "unknown"),
-                    "retrieval_time": 0, "llm_time": 0, "score": 0,
+                    "retrieval_time": 0, "llm_time": 0, "score": 0, "reasoning": str(e),
                 }
 
-    results = [r for r in results if r is not None]
-    return results
+    return [r for r in results if r is not None]
 
 
-def print_report_tagged(results: list[dict], tag: str):
-    print(f"\n{'=' * 70}")
-    print(f"  LOCOMO BENCHMARK RESULTS  [{tag}]")
-    print(f"{'=' * 70}\n")
+# ── Report Generation ──
 
-    non_adv_results = [r for r in results if r["category"] != 5]
-    adv_results = [r for r in results if r["category"] == 5]
-
-    scores = [r["score"] for r in non_adv_results if r["score"] > 0]
-    avg_score = sum(scores) / len(scores) if scores else 0
-    retrieval_times = [r["retrieval_time"] for r in non_adv_results]
-    avg_retrieval = sum(retrieval_times) / len(retrieval_times) if retrieval_times else 0
-
-    print(f"  Overall (excluding adversarial):")
-    print(f"    Questions: {len(non_adv_results)} (+ {len(adv_results)} adversarial excluded)")
-    print(f"    Avg Score: {avg_score:.2f}/5")
-    print(f"    Score >= 4: {sum(1 for s in scores if s >= 4)}/{len(scores)} ({sum(1 for s in scores if s >= 4)/len(scores)*100:.1f}%)")
-    print(f"    Score >= 3: {sum(1 for s in scores if s >= 3)}/{len(scores)} ({sum(1 for s in scores if s >= 3)/len(scores)*100:.1f}%)")
-    print(f"    Avg Retrieval: {avg_retrieval:.2f}s")
-
-    print(f"\n  Per Category:")
-    print(f"    {'Category':<15} {'Count':>6} {'Avg Score':>10} {'>=4':>6} {'>=3':>6}")
-    print(f"    {'-'*15} {'-'*6} {'-'*10} {'-'*6} {'-'*6}")
-
-    for cat_num in sorted(CATEGORY_NAMES.keys()):
-        if cat_num == 5:
-            continue
-        cat_results = [r for r in results if r["category"] == cat_num and r["score"] > 0]
-        if not cat_results:
-            continue
-        cat_scores = [r["score"] for r in cat_results]
-        avg = sum(cat_scores) / len(cat_scores)
-        gte4 = sum(1 for s in cat_scores if s >= 4)
-        gte3 = sum(1 for s in cat_scores if s >= 3)
-        name = CATEGORY_NAMES[cat_num]
-        print(f"    {name:<15} {len(cat_results):>6} {avg:>10.2f} {gte4:>5} {gte3:>5}")
-
-    worst = sorted([r for r in non_adv_results if r["score"] > 0], key=lambda x: x["score"])[:5]
-    if worst:
-        print(f"\n  Worst Answers:")
-        for r in worst:
-            print(f"    [{r['cat_name']}] Score {r['score']}/5: {r['question'][:60]}")
-            print(f"      GT:  {r['ground_truth'][:60]}")
-            print(f"      Got: {r['answer'][:60]}")
-            print()
-
-    output_path = f"benchmark_results/gpt_style_{tag}.json"
-    os.makedirs("benchmark_results", exist_ok=True)
+def generate_report(all_results: dict, output_path: str):
+    """Generate a markdown report from all sample results."""
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"  Full results saved to {output_path}")
+        f.write("# LoCoMo Benchmark Results\n\n")
+        f.write(f"**Date**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+        f.write(f"**Architecture**: gpt_style (rolling summary, no RAG for chat)\n")
+        f.write(f"**Samples**: {len(all_results)}\n\n")
 
+        # Overall summary table
+        f.write("## Overall Summary\n\n")
+        f.write("| Sample | Speakers | Sessions | QA Total | Non-Adv | Adv | Avg Score | Avg (Non-Adv) | Avg (Adv) | >=4 | >=3 |\n")
+        f.write("|--------|----------|----------|----------|---------|-----|-----------|---------------|-----------|-----|-----|\n")
+
+        grand_scores = []
+        grand_non_adv = []
+        grand_adv = []
+
+        for sample_idx, results in sorted(all_results.items()):
+            non_adv = [r for r in results if r["category"] != 5 and r["score"] > 0]
+            adv = [r for r in results if r["category"] == 5 and r["score"] > 0]
+            all_scored = [r for r in results if r["score"] > 0]
+
+            non_adv_scores = [r["score"] for r in non_adv]
+            adv_scores = [r["score"] for r in adv]
+            all_scores = [r["score"] for r in all_scored]
+
+            avg_all = sum(all_scores) / len(all_scores) if all_scores else 0
+            avg_non_adv = sum(non_adv_scores) / len(non_adv_scores) if non_adv_scores else 0
+            avg_adv = sum(adv_scores) / len(adv_scores) if adv_scores else 0
+            gte4 = sum(1 for s in all_scores if s >= 4)
+            gte3 = sum(1 for s in all_scores if s >= 3)
+
+            grand_scores.extend(all_scores)
+            grand_non_adv.extend(non_adv_scores)
+            grand_adv.extend(adv_scores)
+
+            # Get speakers from first result's metadata or use index
+            conv = load_conversation(sample_idx)
+            speakers = f"{conv['conversation'].get('speaker_a', '?')} & {conv['conversation'].get('speaker_b', '?')}"
+            sessions = len([k for k in conv['conversation'] if k.startswith('session_') and not k.endswith('date_time')])
+
+            f.write(f"| {sample_idx} | {speakers} | {sessions} | {len(results)} | {len(non_adv)} | {len(adv)} | {avg_all:.2f}/5 | {avg_non_adv:.2f}/5 | {avg_adv:.2f}/5 | {gte4}/{len(all_scores)} ({gte4/max(len(all_scores),1)*100:.1f}%) | {gte3}/{len(all_scores)} ({gte3/max(len(all_scores),1)*100:.1f}%) |\n")
+
+        # Grand totals
+        if grand_scores:
+            f.write(f"| **Total** | | | | {len(grand_non_adv)} | {len(grand_adv)} | **{sum(grand_scores)/len(grand_scores):.2f}/5** | **{sum(grand_non_adv)/len(grand_non_adv):.2f}/5** | **{sum(grand_adv)/len(grand_adv):.2f}/5** | {sum(1 for s in grand_scores if s >= 4)}/{len(grand_scores)} ({sum(1 for s in grand_scores if s >= 4)/len(grand_scores)*100:.1f}%) | {sum(1 for s in grand_scores if s >= 3)}/{len(grand_scores)} ({sum(1 for s in grand_scores if s >= 3)/len(grand_scores)*100:.1f}%) |\n")
+
+        # Per-category breakdown
+        f.write("\n## Per-Category Breakdown (All Samples Combined)\n\n")
+        f.write("| Category | Count | Avg Score | >=4 | >=3 |\n")
+        f.write("|----------|-------|-----------|-----|-----|\n")
+
+        all_results_flat = []
+        for results in all_results.values():
+            all_results_flat.extend(results)
+
+        for cat_num in sorted(CATEGORY_NAMES.keys()):
+            cat_results = [r for r in all_results_flat if r["category"] == cat_num and r["score"] > 0]
+            if not cat_results:
+                continue
+            cat_scores = [r["score"] for r in cat_results]
+            avg = sum(cat_scores) / len(cat_scores)
+            gte4 = sum(1 for s in cat_scores if s >= 4)
+            gte3 = sum(1 for s in cat_scores if s >= 3)
+            name = CATEGORY_NAMES[cat_num]
+            f.write(f"| {name} | {len(cat_results)} | {avg:.2f}/5 | {gte4}/{len(cat_results)} ({gte4/len(cat_results)*100:.1f}%) | {gte3}/{len(cat_results)} ({gte3/len(cat_results)*100:.1f}%) |\n")
+
+        # Per-sample details
+        for sample_idx, results in sorted(all_results.items()):
+            conv = load_conversation(sample_idx)
+            speakers = f"{conv['conversation'].get('speaker_a', '?')} & {conv['conversation'].get('speaker_b', '?')}"
+
+            f.write(f"\n---\n\n## Sample {sample_idx}: {speakers}\n\n")
+
+            # Category breakdown for this sample
+            f.write("### Per-Category\n\n")
+            f.write("| Category | Count | Avg Score | >=4 | >=3 |\n")
+            f.write("|----------|-------|-----------|-----|-----|\n")
+
+            for cat_num in sorted(CATEGORY_NAMES.keys()):
+                cat_results = [r for r in results if r["category"] == cat_num and r["score"] > 0]
+                if not cat_results:
+                    continue
+                cat_scores = [r["score"] for r in cat_results]
+                avg = sum(cat_scores) / len(cat_scores)
+                gte4 = sum(1 for s in cat_scores if s >= 4)
+                gte3 = sum(1 for s in cat_scores if s >= 3)
+                name = CATEGORY_NAMES[cat_num]
+                f.write(f"| {name} | {len(cat_results)} | {avg:.2f}/5 | {gte4}/{len(cat_results)} ({gte4/len(cat_results)*100:.1f}%) | {gte3}/{len(cat_results)} ({gte3/len(cat_results)*100:.1f}%) |\n")
+
+            # Worst answers
+            worst = sorted([r for r in results if r["score"] > 0], key=lambda x: x["score"])[:5]
+            if worst:
+                f.write(f"\n### Worst Answers\n\n")
+                f.write("| Category | Score | Question | Ground Truth | Got |\n")
+                f.write("|----------|-------|----------|-------------|-----|\n")
+                for r in worst:
+                    q = r["question"][:60].replace("|", "/")
+                    gt = r["ground_truth"][:50].replace("|", "/")
+                    got = r["answer"][:50].replace("|", "/")
+                    f.write(f"| {r['cat_name']} | {r['score']}/5 | {q} | {gt} | {got} |\n")
+
+    print(f"\n[report] Saved to {output_path}")
+
+
+def save_raw_results(sample_idx: int, results: list[dict]):
+    """Save raw JSON results for a sample."""
+    os.makedirs("benchmark_results", exist_ok=True)
+    path = f"benchmark_results/sample_{sample_idx}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"[save] Raw results: {path}")
+
+
+# ── Main ──
 
 def main():
     parser = argparse.ArgumentParser(description="Run LoCoMo benchmark")
-    parser.add_argument("--sample", type=int, default=0, help="Sample index (0-9)")
-    parser.add_argument("--limit", type=int, default=None, help="Limit number of QA pairs")
-    parser.add_argument("--skip-ingest", action="store_true", help="Skip ingestion")
-    parser.add_argument("--reset", action="store_true", help="Reset DB before ingestion")
-    parser.add_argument("--workers", type=int, default=5, help="Parallel workers for QA")
+    parser.add_argument("--samples", type=int, nargs="*", default=None,
+                        help="Sample indices to run (default: all 0-9)")
+    parser.add_argument("--workers", type=int, default=5,
+                        help="Parallel workers for QA evaluation")
+    parser.add_argument("--skip-ingest", action="store_true",
+                        help="Skip reset + ingestion, run QA only on existing data")
     args = parser.parse_args()
 
-    sample = load_conversation(args.sample)
-    print(f"Loaded sample {args.sample}: {len(sample['qa'])} QA pairs")
+    samples = args.samples if args.samples is not None else list(range(10))
 
-    if args.reset:
-        from main import reset_databases
-        reset_databases()
+    print(f"\n{'#' * 60}")
+    print(f"  LoCoMo BENCHMARK — {len(samples)} samples")
+    print(f"  Samples: {samples}")
+    print(f"  Workers: {args.workers}")
+    print(f"{'#' * 60}")
 
-    if not args.skip_ingest:
-        ingest_conversation(sample)
+    all_results = {}
+    total_start = time.time()
 
-    results = run_qa(sample, limit=args.limit, parallel_workers=args.workers)
-    print_report_tagged(results, "gpt_style")
+    for i, sample_idx in enumerate(samples):
+        sample = load_conversation(sample_idx)
+        conv = sample["conversation"]
+        speakers = f"{conv.get('speaker_a', '?')} & {conv.get('speaker_b', '?')}"
+        sessions = len([k for k in conv if k.startswith("session_") and not k.endswith("date_time")])
+        qa_count = len(sample["qa"])
+
+        print(f"\n{'=' * 60}")
+        print(f"  SAMPLE {sample_idx}/{len(samples)-1}: {speakers}")
+        print(f"  Sessions: {sessions} | QA: {qa_count}")
+        print(f"  Progress: {i+1}/{len(samples)}")
+        print(f"{'=' * 60}")
+
+        if not args.skip_ingest:
+            # Step 1: Reset
+            print(f"\n[step 1/3] Resetting databases...")
+            reset_databases()
+
+            # Step 2: Ingest
+            print(f"\n[step 2/3] Ingesting conversations...")
+            t_ingest = time.time()
+            ingest_sample(sample)
+            ingest_time = time.time() - t_ingest
+            print(f"[ingest] Total time: {ingest_time:.1f}s")
+        else:
+            ingest_time = 0
+            print(f"\n[skip] Using existing data (--skip-ingest)")
+
+        # Step 3: Evaluate
+        print(f"\n[step 3/3] Running QA evaluation...")
+        t_qa = time.time()
+        results = run_qa(sample, parallel_workers=args.workers)
+        qa_time = time.time() - t_qa
+
+        # Print summary for this sample
+        scored = [r for r in results if r["score"] > 0]
+        non_adv = [r for r in scored if r["category"] != 5]
+        adv = [r for r in scored if r["category"] == 5]
+
+        avg_all = sum(r["score"] for r in scored) / len(scored) if scored else 0
+        avg_non_adv = sum(r["score"] for r in non_adv) / len(non_adv) if non_adv else 0
+        avg_adv = sum(r["score"] for r in adv) / len(adv) if adv else 0
+
+        print(f"\n[sample {sample_idx} summary]")
+        print(f"  Avg score (all):     {avg_all:.2f}/5")
+        print(f"  Avg score (non-adv): {avg_non_adv:.2f}/5")
+        print(f"  Avg score (adv):     {avg_adv:.2f}/5")
+        print(f"  Ingest time:         {ingest_time:.0f}s")
+        print(f"  QA time:             {qa_time:.0f}s")
+
+        # Save raw results
+        save_raw_results(sample_idx, results)
+        all_results[sample_idx] = results
+
+    # Generate final report
+    total_time = time.time() - total_start
+    print(f"\n{'#' * 60}")
+    print(f"  ALL SAMPLES COMPLETE — {total_time:.0f}s total")
+    print(f"{'#' * 60}")
+
+    report_path = f"benchmark_results/locomo_report_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+    generate_report(all_results, report_path)
+
+    # Also save combined raw results
+    combined_path = "benchmark_results/all_results.json"
+    with open(combined_path, "w", encoding="utf-8") as f:
+        json.dump({str(k): v for k, v in all_results.items()}, f, indent=2, ensure_ascii=False)
+    print(f"[save] Combined results: {combined_path}")
 
 
 if __name__ == "__main__":

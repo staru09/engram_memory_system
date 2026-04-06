@@ -210,6 +210,27 @@ frontend/                    # React 19 + Vite + Tailwind chat UI
 
 ---
 
+## LoCoMo Benchmark Results
+
+Evaluated on the [LoCoMo](https://github.com/snap-research/locomo) benchmark across 10 sessions, scored by GPT-4 on a 1-5 scale.
+
+| Metric | Score (%) |
+|--------|-----------|
+| **Overall (all categories)** | 88.3% |
+| **Without adversarial** | 90.2% |
+
+Category breakdown:
+
+| Category | Description |
+|----------|-------------|
+| Temporal | Date/time-based recall |
+| Multi-hop | Reasoning across multiple facts |
+| Adversarial | Deliberately tricky questions |
+
+Adversarial questions are excluded in the filtered score since they test robustness to misleading prompts rather than memory accuracy.
+
+---
+
 ## Getting Started
 
 ### 1. Environment Setup

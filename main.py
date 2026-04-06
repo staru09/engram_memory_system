@@ -95,6 +95,11 @@ def ingest_conversation(conversation: list[dict], source_id: str = "default",
         return elapsed, embeddings
 
     def _run_profile_sync():
+        if extract_all_speakers:
+            # Benchmark mode: skip profile update — rolling summary has both speakers' facts
+            # Profile would mix speakers and confuse the LLM
+            print(f"    [profile] Skipped (multi-speaker benchmark mode)")
+            return 0.0, 0
         t = time.time()
         profile, conflicts = update_user_profile(facts)
         elapsed = time.time() - t
